@@ -64,6 +64,32 @@ public sealed class ScriptHttpClientTests
     }
 
     [Fact]
+    public async Task HttpsOnly_preset_accepts_https_and_rejects_http()
+    {
+        using var httpsRequest = new HttpRequestMessage(HttpMethod.Get, "https://example.test/");
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, "http://example.test/");
+
+        var httpsResult = await ScriptHttpPolicy.HttpsOnly.ValidateRequestAsync(httpsRequest);
+        var httpResult = await ScriptHttpPolicy.HttpsOnly.ValidateRequestAsync(httpRequest);
+
+        Assert.True(httpsResult.Success);
+        Assert.False(httpResult.Success);
+        Assert.Equal(ScriptHttpErrorCode.BlockedByPolicy, httpResult.Error?.Code);
+    }
+
+    [Theory]
+    [InlineData("https://example.test/")]
+    [InlineData("http://example.test/")]
+    public async Task HttpAndHttps_preset_accepts_http_and_https(string uri)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+
+        var result = await ScriptHttpPolicy.HttpAndHttps.ValidateRequestAsync(request);
+
+        Assert.True(result.Success);
+    }
+
+    [Fact]
     public async Task Policy_rejects_relative_or_null_request_uris()
     {
         var policy = new ScriptHttpPolicy();
@@ -97,12 +123,25 @@ public sealed class ScriptHttpClientTests
     [Fact]
     public async Task Policy_honors_explicitly_allowed_schemes()
     {
-        var policy = new ScriptHttpPolicy { AllowedSchemes = ["https", "http"] };
+        var policy = ScriptHttpPolicy.HttpAndHttps;
         using var request = new HttpRequestMessage(HttpMethod.Get, "http://example.test/");
 
         var result = await policy.ValidateRequestAsync(request);
 
         Assert.True(result.Success);
+    }
+
+    [Fact]
+    public async Task Policy_presets_can_be_cloned_with_host_limits()
+    {
+        var policy = ScriptHttpPolicy.HttpAndHttps with { MaxTimeout = TimeSpan.FromSeconds(5) };
+        using var request = new HttpRequestMessage(HttpMethod.Get, "http://example.test/");
+        request.Options.Set(ScriptHttpPolicy.TimeoutOption, TimeSpan.FromSeconds(10));
+
+        var result = await policy.ValidateRequestAsync(request);
+
+        Assert.False(result.Success);
+        Assert.Equal(ScriptHttpErrorCode.BlockedByPolicy, result.Error?.Code);
     }
 
     [Fact]

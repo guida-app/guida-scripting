@@ -10,6 +10,22 @@ public sealed record ScriptHttpPolicy
     private static readonly IReadOnlyCollection<string> DefaultSchemes =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "https" };
 
+    private static readonly IReadOnlyCollection<string> HttpAndHttpsSchemes =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "https", "http" };
+
+    /// <summary>
+    /// Default secure policy preset. Allows only HTTPS requests.
+    /// </summary>
+    public static ScriptHttpPolicy HttpsOnly { get; } = new();
+
+    /// <summary>
+    /// Compatibility policy preset for hosts that explicitly allow both HTTP and HTTPS requests.
+    /// </summary>
+    public static ScriptHttpPolicy HttpAndHttps { get; } = new()
+    {
+        AllowedSchemes = HttpAndHttpsSchemes
+    };
+
     /// <summary>
     /// Request option key used for per-request timeout requests.
     /// </summary>
@@ -17,7 +33,8 @@ public sealed record ScriptHttpPolicy
         new("Guida.Scripting.Http.Timeout");
 
     /// <summary>
-    /// URI schemes allowed by this policy.
+    /// URI schemes allowed by this policy. The default allows only HTTPS; hosts that intentionally allow
+    /// plain HTTP can use <see cref="HttpAndHttps" /> or set this property explicitly.
     /// </summary>
     public IReadOnlyCollection<string> AllowedSchemes { get; init; } = DefaultSchemes;
 
