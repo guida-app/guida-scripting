@@ -95,7 +95,9 @@ public sealed class ScriptTaskManagerTests
     public async Task StartAsync_passes_host_context_to_engine_creation()
     {
         var engine = new FakeScriptEngine(ScriptExecutionResult.Succeeded());
-        var hostContext = new ScriptHostContext { Logger = new FakeScriptLogger() };
+        var capability = new FakeCapability();
+        var hostContext = new ScriptHostContext { Logger = new FakeScriptLogger() }
+            .WithCapability<IFakeCapability>(capability);
         ScriptEngineCreationContext? capturedContext = null;
         var factory = new ScriptEngineFactory();
         factory.Register(
@@ -119,9 +121,11 @@ public sealed class ScriptTaskManagerTests
         Assert.Equal(ScriptTaskStatus.Completed, final.Status);
         Assert.NotNull(capturedContext);
         Assert.Same(hostContext.Logger, capturedContext.HostContext.Logger);
+        Assert.Same(capability, capturedContext.HostContext.GetCapability<IFakeCapability>());
         Assert.Equal(final.Id, capturedContext.HostContext.Execution.TaskId);
         Assert.Equal(ScriptTaskOrigin.External, capturedContext.HostContext.Execution.Origin);
         Assert.Same(hostContext.Logger, executedRequest.HostContext.Logger);
+        Assert.Same(capability, executedRequest.HostContext.GetCapability<IFakeCapability>());
         Assert.Equal(final.Id, executedRequest.HostContext.Execution.TaskId);
         Assert.Equal(
             capturedContext.HostContext.Execution,
@@ -536,5 +540,13 @@ public sealed class ScriptTaskManagerTests
         public void Log(ScriptLogEntry entry)
         {
         }
+    }
+
+    private interface IFakeCapability : IScriptHostCapability
+    {
+    }
+
+    private sealed class FakeCapability : IFakeCapability
+    {
     }
 }
