@@ -14,4 +14,9 @@ public sealed record ScriptEngineCreationContext
     /// Optional display name for diagnostics.
     /// </summary>
     public string? Name { get; init; }
+
+    /// <summary>
+    /// Host-provided context available to the script engine.
+    /// </summary>
+    public ScriptHostContext HostContext { get; init; } = ScriptHostContext.Empty;
 }

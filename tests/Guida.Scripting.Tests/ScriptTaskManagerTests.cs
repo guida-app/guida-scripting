@@ -92,6 +92,33 @@ public sealed class ScriptTaskManagerTests
     }
 
     [Fact]
+    public async Task StartAsync_passes_host_context_to_engine_creation()
+    {
+        var engine = new FakeScriptEngine(ScriptExecutionResult.Succeeded());
+        var hostContext = new ScriptHostContext { Logger = new FakeScriptLogger() };
+        ScriptEngineCreationContext? capturedContext = null;
+        var factory = new ScriptEngineFactory();
+        factory.Register(
+            ScriptLanguage.JavaScript,
+            context =>
+            {
+                capturedContext = context;
+                return engine;
+            });
+        var manager = new ScriptTaskManager(factory);
+
+        var final = await manager.StartAsync(new ScriptExecutionRequest
+        {
+            Language = ScriptLanguage.JavaScript,
+            HostContext = hostContext
+        });
+
+        Assert.Equal(ScriptTaskStatus.Completed, final.Status);
+        Assert.NotNull(capturedContext);
+        Assert.Same(hostContext, capturedContext.HostContext);
+    }
+
+    [Fact]
     public async Task StartAsync_maps_failed_engine_result()
     {
         var engine = new FakeScriptEngine(ScriptExecutionResult.Failed("bad script"));
@@ -492,5 +519,12 @@ public sealed class ScriptTaskManagerTests
         public void Stop() => StopCalls++;
 
         public void Dispose() => Disposed = true;
+    }
+
+    private sealed class FakeScriptLogger : IScriptLogger
+    {
+        public void Log(ScriptLogEntry entry)
+        {
+        }
     }
 }

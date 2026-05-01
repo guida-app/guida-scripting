@@ -84,7 +84,8 @@ public sealed class ScriptTaskManager
             engine = _engineFactory.Create(new ScriptEngineCreationContext
             {
                 Language = language,
-                Name = request.Name
+                Name = request.Name,
+                HostContext = request.HostContext
             });
 
             SetEngine(state, engine);

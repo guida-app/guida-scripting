@@ -30,6 +30,7 @@ public sealed class ScriptEngineFactoryTests
     public void Create_passes_creation_context_to_registered_factory()
     {
         var factory = new ScriptEngineFactory();
+        var hostContext = new ScriptHostContext { Logger = new FakeScriptLogger() };
         ScriptEngineCreationContext? capturedContext = null;
         factory.Register(
             ScriptLanguage.TypeScript,
@@ -42,12 +43,14 @@ public sealed class ScriptEngineFactoryTests
         factory.Create(new ScriptEngineCreationContext
         {
             Language = ScriptLanguage.TypeScript,
-            Name = "script.ts"
+            Name = "script.ts",
+            HostContext = hostContext
         });
 
         Assert.NotNull(capturedContext);
         Assert.Equal(ScriptLanguage.TypeScript, capturedContext.Language);
         Assert.Equal("script.ts", capturedContext.Name);
+        Assert.Same(hostContext, capturedContext.HostContext);
     }
 
     [Fact]
@@ -113,6 +116,13 @@ public sealed class ScriptEngineFactoryTests
         }
 
         public void Dispose()
+        {
+        }
+    }
+
+    private sealed class FakeScriptLogger : IScriptLogger
+    {
+        public void Log(ScriptLogEntry entry)
         {
         }
     }
