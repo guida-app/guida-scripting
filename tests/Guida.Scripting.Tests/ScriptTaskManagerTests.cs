@@ -107,15 +107,25 @@ public sealed class ScriptTaskManagerTests
             });
         var manager = new ScriptTaskManager(factory);
 
-        var final = await manager.StartAsync(new ScriptExecutionRequest
-        {
-            Language = ScriptLanguage.JavaScript,
-            HostContext = hostContext
-        });
+        var final = await manager.StartAsync(
+            new ScriptExecutionRequest
+            {
+                Language = ScriptLanguage.JavaScript,
+                HostContext = hostContext
+            },
+            new ScriptTaskStartOptions { Origin = ScriptTaskOrigin.External });
+        var executedRequest = await engine.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.Equal(ScriptTaskStatus.Completed, final.Status);
         Assert.NotNull(capturedContext);
-        Assert.Same(hostContext, capturedContext.HostContext);
+        Assert.Same(hostContext.Logger, capturedContext.HostContext.Logger);
+        Assert.Equal(final.Id, capturedContext.HostContext.Execution.TaskId);
+        Assert.Equal(ScriptTaskOrigin.External, capturedContext.HostContext.Execution.Origin);
+        Assert.Same(hostContext.Logger, executedRequest.HostContext.Logger);
+        Assert.Equal(final.Id, executedRequest.HostContext.Execution.TaskId);
+        Assert.Equal(
+            capturedContext.HostContext.Execution,
+            executedRequest.HostContext.Execution);
     }
 
     [Fact]

@@ -11,6 +11,11 @@ public sealed record ScriptHostContext
     public static ScriptHostContext Empty { get; } = new();
 
     /// <summary>
+    /// Execution metadata associated with the current script task.
+    /// </summary>
+    public ScriptExecutionInfo Execution { get; init; } = ScriptExecutionInfo.Empty;
+
+    /// <summary>
     /// Optional logger engines can use for script-visible or host-visible messages.
     /// </summary>
     public IScriptLogger? Logger { get; init; }

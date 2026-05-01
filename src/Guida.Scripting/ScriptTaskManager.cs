@@ -60,6 +60,15 @@ public sealed class ScriptTaskManager
         AddTask(state);
         TaskStarted?.Invoke(this, Snapshot(state));
 
+        var hostContext = request.HostContext with
+        {
+            Execution = request.HostContext.Execution with
+            {
+                TaskId = taskId,
+                Origin = state.Origin
+            }
+        };
+
         IScriptEngine? engine = null;
         ScriptExecutionResult? result = null;
         ScriptTaskStatus status = ScriptTaskStatus.Failed;
@@ -85,7 +94,7 @@ public sealed class ScriptTaskManager
             {
                 Language = language,
                 Name = request.Name,
-                HostContext = request.HostContext
+                HostContext = hostContext
             });
 
             SetEngine(state, engine);
@@ -94,7 +103,8 @@ public sealed class ScriptTaskManager
                 request with
                 {
                     Language = language,
-                    Timeout = timeout
+                    Timeout = timeout,
+                    HostContext = hostContext
                 },
                 state.CancellationTokenSource.Token).ConfigureAwait(false);
 

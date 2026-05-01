@@ -8,6 +8,14 @@ public sealed class ScriptHostContextTests
     public void Empty_has_no_logger()
     {
         Assert.Null(ScriptHostContext.Empty.Logger);
+        Assert.Same(ScriptExecutionInfo.Empty, ScriptHostContext.Empty.Execution);
+    }
+
+    [Fact]
+    public void ScriptExecutionInfo_empty_has_default_user_origin()
+    {
+        Assert.Null(ScriptExecutionInfo.Empty.TaskId);
+        Assert.Equal(ScriptTaskOrigin.User, ScriptExecutionInfo.Empty.Origin);
     }
 
     [Fact]
