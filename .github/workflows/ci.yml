@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build-test:
+    name: Build and test
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Restore
+        run: dotnet restore Guida.Scripting.sln -m:1
+
+      - name: Build
+        run: dotnet build Guida.Scripting.sln -c Debug --no-restore -m:1
+
+      - name: Test
+        run: dotnet test Guida.Scripting.sln -c Debug --no-build -m:1 --collect:"XPlat Code Coverage"
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: tests/**/TestResults/**/coverage.cobertura.xml
+          if-no-files-found: error
+
+      - name: Formatting check placeholder
+        run: dotnet format Guida.Scripting.sln --verify-no-changes --verbosity minimal
+
+      - name: Package validation placeholder
+        run: dotnet pack src/Guida.Scripting/Guida.Scripting.csproj -c Release
