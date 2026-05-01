@@ -69,6 +69,75 @@ public sealed class ScriptWorkspaceTests
         Assert.Equal(ScriptWorkspaceErrorCode.InvalidPath, result.Error?.Code);
     }
 
+    [Theory]
+    [InlineData("scripts", "helper.js", "scripts/helper.js")]
+    [InlineData("workflows/demo/scripts", "../lib/util.js", "workflows/demo/lib/util.js")]
+    [InlineData("", "scripts/main.js", "scripts/main.js")]
+    [InlineData(".", "scripts/main.js", "scripts/main.js")]
+    [InlineData(@"workflows\demo\scripts", @"..\lib\util.js", "workflows/demo/lib/util.js")]
+    [InlineData("scripts/nested", "./helper.js", "scripts/nested/helper.js")]
+    [InlineData("scripts/nested", "child//./helper.js", "scripts/nested/child/helper.js")]
+    public void Workspace_relative_resolution_resolves_from_base_directory(
+        string baseDirectory,
+        string relativePath,
+        string expected)
+    {
+        var result = ScriptWorkspacePath.ResolveRelative(baseDirectory, relativePath);
+
+        Assert.True(result.Success);
+        Assert.Equal(expected, result.Value);
+    }
+
+    [Theory]
+    [InlineData("", "../outside.txt")]
+    [InlineData("scripts", "../../outside.txt")]
+    [InlineData("workflows/demo/scripts", "../../../../outside.txt")]
+    public void Workspace_relative_resolution_rejects_paths_escaping_root(
+        string baseDirectory,
+        string relativePath)
+    {
+        var result = ScriptWorkspacePath.ResolveRelative(baseDirectory, relativePath);
+
+        Assert.False(result.Success);
+        Assert.Null(result.Value);
+        Assert.NotNull(result.Error);
+        Assert.Equal(ScriptWorkspaceErrorCode.InvalidPath, result.Error.Code);
+    }
+
+    [Theory]
+    [InlineData("scripts", "/absolute/path.txt")]
+    [InlineData("scripts", @"C:\absolute\path.txt")]
+    [InlineData("scripts", "https://example.test/file.txt")]
+    [InlineData("scripts", "file:///tmp/file.txt")]
+    [InlineData("../base", "helper.js")]
+    [InlineData("scripts/../base", "helper.js")]
+    [InlineData("/base", "helper.js")]
+    [InlineData(@"C:\base", "helper.js")]
+    [InlineData("https://example.test/base", "helper.js")]
+    public void Workspace_relative_resolution_rejects_unsafe_paths(
+        string baseDirectory,
+        string relativePath)
+    {
+        var result = ScriptWorkspacePath.ResolveRelative(baseDirectory, relativePath);
+
+        Assert.False(result.Success);
+        Assert.Null(result.Value);
+        Assert.NotNull(result.Error);
+        Assert.Equal(ScriptWorkspaceErrorCode.InvalidPath, result.Error.Code);
+    }
+
+    [Fact]
+    public void Workspace_relative_resolution_rejects_nul_characters()
+    {
+        var invalidBase = ScriptWorkspacePath.ResolveRelative("scripts/\0", "helper.js");
+        var invalidRelative = ScriptWorkspacePath.ResolveRelative("scripts", "helper\0.js");
+
+        Assert.False(invalidBase.Success);
+        Assert.False(invalidRelative.Success);
+        Assert.Equal(ScriptWorkspaceErrorCode.InvalidPath, invalidBase.Error?.Code);
+        Assert.Equal(ScriptWorkspaceErrorCode.InvalidPath, invalidRelative.Error?.Code);
+    }
+
     [Fact]
     public void Sandbox_resolves_logical_paths_beneath_root()
     {

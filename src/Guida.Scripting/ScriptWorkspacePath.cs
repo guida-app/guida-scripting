@@ -55,6 +55,75 @@ public static class ScriptWorkspacePath
         return ScriptWorkspaceResult<string>.Succeeded(string.Join('/', segments));
     }
 
+    /// <summary>
+    /// Resolves a relative path against a normalized workspace directory path.
+    /// </summary>
+    public static ScriptWorkspaceResult<string> ResolveRelative(
+        string baseDirectoryPath,
+        string relativePath)
+    {
+        var normalizedBase = Normalize(baseDirectoryPath);
+        if (!normalizedBase.Success)
+        {
+            return ScriptWorkspaceResult<string>.Failed(normalizedBase.Error!);
+        }
+
+        if (relativePath is null)
+        {
+            return Invalid(string.Empty, "Workspace path cannot be null.");
+        }
+
+        if (relativePath.IndexOf('\0') >= 0)
+        {
+            return Invalid(relativePath, "Workspace path cannot contain NUL characters.");
+        }
+
+        if (IsWindowsDrivePath(relativePath))
+        {
+            return Invalid(relativePath, "Workspace path must not be drive-rooted.");
+        }
+
+        if (HasUriScheme(relativePath))
+        {
+            return Invalid(relativePath, "Workspace path must not be a URI.");
+        }
+
+        var normalizedRelative = relativePath.Replace('\\', '/');
+        if (normalizedRelative.StartsWith('/'))
+        {
+            return Invalid(relativePath, "Workspace path must be relative.");
+        }
+
+        var segments = new List<string>();
+        if (!string.IsNullOrEmpty(normalizedBase.Value))
+        {
+            segments.AddRange(normalizedBase.Value.Split('/'));
+        }
+
+        foreach (var segment in normalizedRelative.Split('/'))
+        {
+            if (segment.Length == 0 || segment == ".")
+            {
+                continue;
+            }
+
+            if (segment == "..")
+            {
+                if (segments.Count == 0)
+                {
+                    return Invalid(relativePath, "Workspace path must not escape the workspace root.");
+                }
+
+                segments.RemoveAt(segments.Count - 1);
+                continue;
+            }
+
+            segments.Add(segment);
+        }
+
+        return ScriptWorkspaceResult<string>.Succeeded(string.Join('/', segments));
+    }
+
     private static ScriptWorkspaceResult<string> Invalid(string path, string message) =>
         ScriptWorkspaceResult<string>.Failed(new ScriptWorkspaceError(
             ScriptWorkspaceErrorCode.InvalidPath,
