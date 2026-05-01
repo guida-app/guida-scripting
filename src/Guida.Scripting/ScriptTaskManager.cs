@@ -20,18 +20,23 @@ public sealed class ScriptTaskManager
     }
 
     /// <summary>
-    /// Fires after a task is registered as running.
+    /// Fires after a task is registered as running. The event argument is a snapshot.
     /// </summary>
     public event EventHandler<ScriptTaskRecord>? TaskStarted;
 
     /// <summary>
-    /// Fires after a task reaches a terminal status.
+    /// Fires after a task reaches a terminal status. The event argument is a snapshot.
     /// </summary>
     public event EventHandler<ScriptTaskRecord>? TaskCompleted;
 
     /// <summary>
     /// Starts a script task and returns its final task record.
     /// </summary>
+    /// <remarks>
+    /// The manager records and forwards timeout values to the selected engine. Timeout enforcement is owned by
+    /// the engine; the manager maps <see cref="ScriptExecutionResult.IsTimedOut" /> to <see cref="ScriptTaskStatus.TimedOut" />.
+    /// The engine created for the task is disposed before this method returns.
+    /// </remarks>
     public async Task<ScriptTaskRecord> StartAsync(
         ScriptExecutionRequest request,
         ScriptTaskStartOptions? options = null)
@@ -136,6 +141,7 @@ public sealed class ScriptTaskManager
     /// <summary>
     /// Requests cancellation for a running task.
     /// </summary>
+    /// <returns><see langword="true" /> when the task was running and cancellation was requested; otherwise <see langword="false" />.</returns>
     public bool Stop(string taskId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(taskId);
@@ -161,6 +167,7 @@ public sealed class ScriptTaskManager
     /// <summary>
     /// Requests cancellation for all running tasks.
     /// </summary>
+    /// <returns>The number of running tasks that accepted a stop request.</returns>
     public int StopAll()
     {
         TaskState[] runningTasks;
@@ -185,7 +192,7 @@ public sealed class ScriptTaskManager
     }
 
     /// <summary>
-    /// Gets a task by identifier.
+    /// Gets a task snapshot by identifier.
     /// </summary>
     public ScriptTaskRecord? GetTask(string taskId)
     {
@@ -198,7 +205,7 @@ public sealed class ScriptTaskManager
     }
 
     /// <summary>
-    /// Gets all tasks, ordered by descending start time.
+    /// Gets task snapshots ordered by descending start time.
     /// </summary>
     public IReadOnlyList<ScriptTaskRecord> GetTasks()
     {
@@ -214,6 +221,7 @@ public sealed class ScriptTaskManager
     /// <summary>
     /// Removes tasks that have reached a terminal status.
     /// </summary>
+    /// <returns>The number of task records removed.</returns>
     public int ClearCompleted()
     {
         lock (_syncRoot)
@@ -233,7 +241,7 @@ public sealed class ScriptTaskManager
     }
 
     /// <summary>
-    /// Registers host-managed work as a running task.
+    /// Registers host-managed work as a running task and returns its running snapshot.
     /// </summary>
     public ScriptTaskRecord RegisterExternalTask(
         string name,
@@ -266,6 +274,7 @@ public sealed class ScriptTaskManager
     /// <summary>
     /// Completes a host-managed task.
     /// </summary>
+    /// <returns><see langword="true" /> when a running external task was completed; otherwise <see langword="false" />.</returns>
     public bool CompleteExternalTask(
         string taskId,
         ScriptTaskStatus status,
@@ -369,7 +378,7 @@ public sealed class ScriptTaskManager
             state.Status = status;
             state.EndedAt = DateTimeOffset.UtcNow;
             state.Duration = state.EndedAt - state.StartedAt;
-            state.ReturnValues = returnValues;
+            state.ReturnValues = returnValues.ToArray();
             state.Error = error;
             state.Engine = null;
 

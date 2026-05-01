@@ -94,41 +94,71 @@ public sealed class ScriptTaskManagerTests
     [Fact]
     public async Task StartAsync_maps_failed_engine_result()
     {
+        var engine = new FakeScriptEngine(ScriptExecutionResult.Failed("bad script"));
         var manager = CreateManager(
-            new FakeScriptEngine(ScriptExecutionResult.Failed("bad script")),
+            engine,
             ScriptLanguage.JavaScript);
 
         var final = await manager.StartAsync(new ScriptExecutionRequest { Language = ScriptLanguage.JavaScript });
 
         Assert.Equal(ScriptTaskStatus.Failed, final.Status);
         Assert.Equal("bad script", final.Error);
+        Assert.True(engine.Disposed);
     }
 
     [Fact]
     public async Task StartAsync_maps_timed_out_engine_result()
     {
         var timeout = TimeSpan.FromSeconds(1);
+        var engine = new FakeScriptEngine(ScriptExecutionResult.TimedOut(timeout));
         var manager = CreateManager(
-            new FakeScriptEngine(ScriptExecutionResult.TimedOut(timeout)),
+            engine,
             ScriptLanguage.JavaScript);
 
         var final = await manager.StartAsync(new ScriptExecutionRequest { Language = ScriptLanguage.JavaScript });
 
         Assert.Equal(ScriptTaskStatus.TimedOut, final.Status);
         Assert.Contains(timeout.ToString(), final.Error);
+        Assert.True(engine.Disposed);
+    }
+
+    [Fact]
+    public async Task StartAsync_does_not_enforce_timeout_when_engine_returns_success()
+    {
+        var engine = new FakeScriptEngine
+        {
+            ExecuteAsyncHandler = async (_, _) =>
+            {
+                await Task.Delay(75);
+                return ScriptExecutionResult.Succeeded("late");
+            }
+        };
+        var manager = CreateManager(engine, ScriptLanguage.JavaScript);
+
+        var final = await manager.StartAsync(
+            new ScriptExecutionRequest
+            {
+                Language = ScriptLanguage.JavaScript,
+                Timeout = TimeSpan.FromMilliseconds(1)
+            });
+
+        Assert.Equal(ScriptTaskStatus.Completed, final.Status);
+        Assert.Equal(["late"], final.ReturnValues);
     }
 
     [Fact]
     public async Task StartAsync_maps_canceled_result()
     {
+        var engine = new FakeScriptEngine(ScriptExecutionResult.Canceled("stopped"));
         var manager = CreateManager(
-            new FakeScriptEngine(ScriptExecutionResult.Canceled("stopped")),
+            engine,
             ScriptLanguage.JavaScript);
 
         var final = await manager.StartAsync(new ScriptExecutionRequest { Language = ScriptLanguage.JavaScript });
 
         Assert.Equal(ScriptTaskStatus.Canceled, final.Status);
         Assert.Equal("stopped", final.Error);
+        Assert.True(engine.Disposed);
     }
 
     [Fact]
@@ -147,6 +177,40 @@ public sealed class ScriptTaskManagerTests
         var final = await manager.StartAsync(new ScriptExecutionRequest { Language = ScriptLanguage.JavaScript });
 
         Assert.Equal(ScriptTaskStatus.Canceled, final.Status);
+        Assert.True(engine.Disposed);
+    }
+
+    [Fact]
+    public async Task StartAsync_maps_engine_exception_to_failed_task_and_disposes_engine()
+    {
+        var engine = new FakeScriptEngine
+        {
+            ExecuteAsyncHandler = (_, _) => throw new InvalidOperationException("engine failed")
+        };
+        var manager = CreateManager(engine, ScriptLanguage.JavaScript);
+
+        var final = await manager.StartAsync(new ScriptExecutionRequest { Language = ScriptLanguage.JavaScript });
+
+        Assert.Equal(ScriptTaskStatus.Failed, final.Status);
+        Assert.Equal("engine failed", final.Error);
+        Assert.True(engine.Disposed);
+    }
+
+    [Fact]
+    public async Task StartAsync_maps_factory_exception_to_failed_task()
+    {
+        var factory = new ScriptEngineFactory();
+        factory.Register(ScriptLanguage.JavaScript, _ => throw new InvalidOperationException("factory failed"));
+        var manager = new ScriptTaskManager(factory);
+        ScriptTaskRecord? completed = null;
+        manager.TaskCompleted += (_, task) => completed = task;
+
+        var final = await manager.StartAsync(new ScriptExecutionRequest { Language = ScriptLanguage.JavaScript });
+
+        Assert.Equal(ScriptTaskStatus.Failed, final.Status);
+        Assert.Equal("factory failed", final.Error);
+        Assert.NotNull(completed);
+        Assert.Equal(final.Id, completed.Id);
     }
 
     [Fact]
@@ -177,6 +241,16 @@ public sealed class ScriptTaskManagerTests
         var manager = new ScriptTaskManager(new ScriptEngineFactory());
 
         Assert.False(manager.Stop("missing"));
+    }
+
+    [Fact]
+    public void Stop_returns_false_for_completed_task()
+    {
+        var manager = new ScriptTaskManager(new ScriptEngineFactory());
+        var external = manager.RegisterExternalTask("external");
+        Assert.True(manager.CompleteExternalTask(external.Id, ScriptTaskStatus.Completed));
+
+        Assert.False(manager.Stop(external.Id));
     }
 
     [Fact]
@@ -329,13 +403,42 @@ public sealed class ScriptTaskManagerTests
     }
 
     [Fact]
-    public void CompleteExternalTask_returns_false_for_missing_or_non_external_task()
+    public async Task CompleteExternalTask_returns_false_for_missing_or_non_external_task()
     {
-        var manager = CreateManager(
-            new FakeScriptEngine(ScriptExecutionResult.Succeeded()),
-            ScriptLanguage.JavaScript);
+        var engine = new FakeScriptEngine();
+        var manager = CreateManager(engine, ScriptLanguage.JavaScript);
+        var runningTask = manager.StartAsync(new ScriptExecutionRequest { Language = ScriptLanguage.JavaScript });
+        await engine.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var running = Assert.Single(manager.GetTasks());
 
         Assert.False(manager.CompleteExternalTask("missing", ScriptTaskStatus.Completed));
+        Assert.False(manager.CompleteExternalTask(running.Id, ScriptTaskStatus.Completed));
+
+        engine.Complete(ScriptExecutionResult.Succeeded());
+        await runningTask.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task Task_snapshots_do_not_expose_internal_return_values()
+    {
+        var returnValues = new List<object?> { "original" };
+        var manager = CreateManager(
+            new FakeScriptEngine(new ScriptExecutionResult
+            {
+                Success = true,
+                ReturnValues = returnValues
+            }),
+            ScriptLanguage.JavaScript);
+
+        var final = await manager.StartAsync(new ScriptExecutionRequest { Language = ScriptLanguage.JavaScript });
+        var finalArray = Assert.IsType<object?[]>(final.ReturnValues);
+        finalArray[0] = "changed from snapshot";
+        returnValues[0] = "changed from engine list";
+
+        var lookup = manager.GetTask(final.Id);
+
+        Assert.NotNull(lookup);
+        Assert.Equal(["original"], lookup.ReturnValues);
     }
 
     private static ScriptTaskManager CreateManager(FakeScriptEngine engine, ScriptLanguage language)
