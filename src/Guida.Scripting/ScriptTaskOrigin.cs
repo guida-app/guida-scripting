@@ -36,6 +36,16 @@ public enum ScriptTaskOrigin
     System,
 
     /// <summary>
+    /// The task was started by a Model Context Protocol integration.
+    /// </summary>
+    Mcp,
+
+    /// <summary>
+    /// The task was started while handling intercepted host activity.
+    /// </summary>
+    Intercept,
+
+    /// <summary>
     /// The task was started by an external source.
     /// </summary>
     External

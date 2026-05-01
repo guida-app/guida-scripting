@@ -272,6 +272,47 @@ public sealed class ScriptTaskManagerTests
             executedRequest.HostContext.Execution);
     }
 
+    [Theory]
+    [InlineData(ScriptTaskOrigin.Mcp)]
+    [InlineData(ScriptTaskOrigin.Intercept)]
+    public async Task Start_propagates_public_integration_origins(ScriptTaskOrigin origin)
+    {
+        var engine = new FakeScriptEngine();
+        ScriptEngineCreationContext? capturedContext = null;
+        var factory = new ScriptEngineFactory();
+        factory.Register(
+            ScriptLanguage.JavaScript,
+            context =>
+            {
+                capturedContext = context;
+                return engine;
+            });
+        var manager = new ScriptTaskManager(factory);
+        ScriptTaskRecord? started = null;
+        ScriptTaskRecord? completed = null;
+        manager.TaskStarted += (_, task) => started = task;
+        manager.TaskCompleted += (_, task) => completed = task;
+
+        var handle = manager.Start(
+            new ScriptExecutionRequest { Language = ScriptLanguage.JavaScript },
+            new ScriptTaskStartOptions { Origin = origin });
+        var executedRequest = await engine.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(origin, handle.InitialRecord.Origin);
+        Assert.NotNull(started);
+        Assert.Equal(origin, started.Origin);
+        Assert.NotNull(capturedContext);
+        Assert.Equal(origin, capturedContext.HostContext.Execution.Origin);
+        Assert.Equal(origin, executedRequest.HostContext.Execution.Origin);
+
+        engine.Complete(ScriptExecutionResult.Succeeded());
+        var final = await handle.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(origin, final.Origin);
+        Assert.NotNull(completed);
+        Assert.Equal(origin, completed.Origin);
+    }
+
     [Fact]
     public async Task StartAsync_maps_failed_engine_result()
     {
@@ -581,6 +622,19 @@ public sealed class ScriptTaskManagerTests
         Assert.Equal(["done"], completed.ReturnValues);
         Assert.Equal(ScriptLanguage.Janet, completed.Language);
         Assert.Equal("job.janet", completed.ScriptName);
+    }
+
+    [Theory]
+    [InlineData(ScriptTaskOrigin.Mcp)]
+    [InlineData(ScriptTaskOrigin.Intercept)]
+    public void RegisterExternalTask_accepts_public_integration_origins(ScriptTaskOrigin origin)
+    {
+        var manager = new ScriptTaskManager(new ScriptEngineFactory());
+
+        var external = manager.RegisterExternalTask("integration job", origin);
+
+        Assert.Equal(origin, external.Origin);
+        Assert.Equal(origin, manager.GetTask(external.Id)?.Origin);
     }
 
     [Fact]
