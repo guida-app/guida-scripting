@@ -14,10 +14,11 @@ public sealed class ScriptHostContextTests
     }
 
     [Fact]
-    public void ScriptExecutionInfo_empty_has_default_user_origin()
+    public void ScriptExecutionInfo_empty_has_default_user_origin_and_trusted_policy()
     {
         Assert.Null(ScriptExecutionInfo.Empty.TaskId);
         Assert.Equal(ScriptTaskOrigin.User, ScriptExecutionInfo.Empty.Origin);
+        Assert.Equal(ScriptExecutionPolicy.Trusted, ScriptExecutionInfo.Empty.Policy);
     }
 
     [Fact]

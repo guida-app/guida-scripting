@@ -47,11 +47,13 @@ public sealed class ScriptTaskManager
         var language = ResolveLanguage(request, options);
         var timeout = options?.Timeout ?? request.Timeout;
         var taskName = GetTaskName(request, options);
+        var origin = options?.Origin ?? ScriptTaskOrigin.User;
+        var policy = options?.Policy ?? ScriptExecutionPolicy.ForOrigin(origin);
         var taskId = CreateTaskId();
         var state = new TaskState(
             taskId,
             taskName,
-            options?.Origin ?? ScriptTaskOrigin.User,
+            origin,
             language,
             DateTimeOffset.UtcNow,
             timeout,
@@ -66,7 +68,7 @@ public sealed class ScriptTaskManager
         {
             Id = taskId,
             InitialRecord = initial,
-            Completion = Task.Run(() => RunTaskAsync(state, request, language, timeout))
+            Completion = Task.Run(() => RunTaskAsync(state, request, language, timeout, policy))
         };
     }
 
@@ -82,14 +84,16 @@ public sealed class ScriptTaskManager
         TaskState state,
         ScriptExecutionRequest request,
         ScriptLanguage language,
-        TimeSpan? timeout)
+        TimeSpan? timeout,
+        ScriptExecutionPolicy policy)
     {
         var hostContext = request.HostContext with
         {
             Execution = request.HostContext.Execution with
             {
                 TaskId = state.Id,
-                Origin = state.Origin
+                Origin = state.Origin,
+                Policy = policy
             }
         };
 

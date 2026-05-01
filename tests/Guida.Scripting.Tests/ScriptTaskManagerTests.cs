@@ -273,6 +273,88 @@ public sealed class ScriptTaskManagerTests
     }
 
     [Theory]
+    [InlineData(ScriptTaskOrigin.Mcp, ScriptAccessLevel.Restricted, false, true)]
+    [InlineData(ScriptTaskOrigin.External, ScriptAccessLevel.Restricted, false, true)]
+    [InlineData(ScriptTaskOrigin.Intercept, ScriptAccessLevel.Trusted, true, true)]
+    [InlineData(ScriptTaskOrigin.Host, ScriptAccessLevel.Trusted, true, true)]
+    public async Task Start_applies_default_execution_policy_by_origin(
+        ScriptTaskOrigin origin,
+        ScriptAccessLevel accessLevel,
+        bool allowRawSecretAccess,
+        bool allowSecretHttpHeaders)
+    {
+        var engine = new FakeScriptEngine();
+        ScriptEngineCreationContext? capturedContext = null;
+        var factory = new ScriptEngineFactory();
+        factory.Register(
+            ScriptLanguage.JavaScript,
+            context =>
+            {
+                capturedContext = context;
+                return engine;
+            });
+        var manager = new ScriptTaskManager(factory);
+
+        var handle = manager.Start(
+            new ScriptExecutionRequest { Language = ScriptLanguage.JavaScript },
+            new ScriptTaskStartOptions { Origin = origin });
+        var executedRequest = await engine.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.NotNull(capturedContext);
+        AssertExecutionPolicy(
+            capturedContext.HostContext.Execution.Policy,
+            accessLevel,
+            allowRawSecretAccess,
+            allowSecretHttpHeaders);
+        AssertExecutionPolicy(
+            executedRequest.HostContext.Execution.Policy,
+            accessLevel,
+            allowRawSecretAccess,
+            allowSecretHttpHeaders);
+
+        engine.Complete(ScriptExecutionResult.Succeeded());
+        await handle.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task Start_uses_explicit_execution_policy_override()
+    {
+        var engine = new FakeScriptEngine();
+        ScriptEngineCreationContext? capturedContext = null;
+        var factory = new ScriptEngineFactory();
+        factory.Register(
+            ScriptLanguage.JavaScript,
+            context =>
+            {
+                capturedContext = context;
+                return engine;
+            });
+        var manager = new ScriptTaskManager(factory);
+        var policy = new ScriptExecutionPolicy
+        {
+            AccessLevel = ScriptAccessLevel.Untrusted,
+            AllowRawSecretAccess = false,
+            AllowSecretHttpHeaders = false
+        };
+
+        var handle = manager.Start(
+            new ScriptExecutionRequest { Language = ScriptLanguage.JavaScript },
+            new ScriptTaskStartOptions
+            {
+                Origin = ScriptTaskOrigin.Host,
+                Policy = policy
+            });
+        var executedRequest = await engine.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.NotNull(capturedContext);
+        Assert.Equal(policy, capturedContext.HostContext.Execution.Policy);
+        Assert.Equal(policy, executedRequest.HostContext.Execution.Policy);
+
+        engine.Complete(ScriptExecutionResult.Succeeded());
+        await handle.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Theory]
     [InlineData(ScriptTaskOrigin.Mcp)]
     [InlineData(ScriptTaskOrigin.Intercept)]
     public async Task Start_propagates_public_integration_origins(ScriptTaskOrigin origin)
@@ -681,6 +763,17 @@ public sealed class ScriptTaskManagerTests
         var factory = new ScriptEngineFactory();
         factory.Register(language, _ => engine);
         return new ScriptTaskManager(factory);
+    }
+
+    private static void AssertExecutionPolicy(
+        ScriptExecutionPolicy policy,
+        ScriptAccessLevel accessLevel,
+        bool allowRawSecretAccess,
+        bool allowSecretHttpHeaders)
+    {
+        Assert.Equal(accessLevel, policy.AccessLevel);
+        Assert.Equal(allowRawSecretAccess, policy.AllowRawSecretAccess);
+        Assert.Equal(allowSecretHttpHeaders, policy.AllowSecretHttpHeaders);
     }
 
     private sealed class FakeScriptEngine : IScriptEngine

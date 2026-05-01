@@ -19,4 +19,9 @@ public sealed record ScriptExecutionInfo
     /// Origin of the task executing through this host context.
     /// </summary>
     public ScriptTaskOrigin Origin { get; init; } = ScriptTaskOrigin.User;
+
+    /// <summary>
+    /// Host policy metadata for this execution.
+    /// </summary>
+    public ScriptExecutionPolicy Policy { get; init; } = ScriptExecutionPolicy.Trusted;
 }

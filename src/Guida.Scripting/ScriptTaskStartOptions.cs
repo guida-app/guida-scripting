@@ -24,4 +24,9 @@ public sealed record ScriptTaskStartOptions
     /// Optional language override for this task.
     /// </summary>
     public ScriptLanguage? Language { get; init; }
+
+    /// <summary>
+    /// Optional execution policy override for this task.
+    /// </summary>
+    public ScriptExecutionPolicy? Policy { get; init; }
 }
