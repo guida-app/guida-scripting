@@ -30,14 +30,15 @@ public sealed class ScriptTaskManager
     public event EventHandler<ScriptTaskRecord>? TaskCompleted;
 
     /// <summary>
-    /// Starts a script task and returns its final task record.
+    /// Starts a script task and returns a handle immediately.
     /// </summary>
     /// <remarks>
+    /// The returned handle contains the initial running snapshot and a completion task for the final snapshot.
     /// The manager records and forwards timeout values to the selected engine. Timeout enforcement is owned by
     /// the engine; the manager maps <see cref="ScriptExecutionResult.IsTimedOut" /> to <see cref="ScriptTaskStatus.TimedOut" />.
-    /// The engine created for the task is disposed before this method returns.
+    /// The engine created for the task is disposed before the completion task finishes.
     /// </remarks>
-    public async Task<ScriptTaskRecord> StartAsync(
+    public ScriptTaskHandle Start(
         ScriptExecutionRequest request,
         ScriptTaskStartOptions? options = null)
     {
@@ -58,13 +59,36 @@ public sealed class ScriptTaskManager
             isExternal: false);
 
         AddTask(state);
-        TaskStarted?.Invoke(this, Snapshot(state));
+        var initial = Snapshot(state);
+        TaskStarted?.Invoke(this, initial);
 
+        return new ScriptTaskHandle
+        {
+            Id = taskId,
+            InitialRecord = initial,
+            Completion = Task.Run(() => RunTaskAsync(state, request, language, timeout))
+        };
+    }
+
+    /// <summary>
+    /// Starts a script task and returns its final task record.
+    /// </summary>
+    public async Task<ScriptTaskRecord> StartAsync(
+        ScriptExecutionRequest request,
+        ScriptTaskStartOptions? options = null) =>
+        await Start(request, options).Completion.ConfigureAwait(false);
+
+    private async Task<ScriptTaskRecord> RunTaskAsync(
+        TaskState state,
+        ScriptExecutionRequest request,
+        ScriptLanguage language,
+        TimeSpan? timeout)
+    {
         var hostContext = request.HostContext with
         {
             Execution = request.HostContext.Execution with
             {
-                TaskId = taskId,
+                TaskId = state.Id,
                 Origin = state.Origin
             }
         };

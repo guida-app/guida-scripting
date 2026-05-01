@@ -5,6 +5,117 @@ namespace Guida.Scripting.Tests;
 public sealed class ScriptTaskManagerTests
 {
     [Fact]
+    public async Task Start_returns_running_handle_before_engine_completion()
+    {
+        var engine = new FakeScriptEngine();
+        var manager = CreateManager(engine, ScriptLanguage.JavaScript);
+        ScriptTaskRecord? started = null;
+        manager.TaskStarted += (_, task) => started = task;
+
+        var handle = manager.Start(
+            new ScriptExecutionRequest
+            {
+                Source = "return 42",
+                Language = ScriptLanguage.JavaScript,
+                Name = "answer.js"
+            },
+            new ScriptTaskStartOptions { Name = "Answer" });
+
+        Assert.NotEqual(string.Empty, handle.Id);
+        Assert.Equal(handle.Id, handle.InitialRecord.Id);
+        Assert.Equal("Answer", handle.InitialRecord.Name);
+        Assert.Equal(ScriptTaskStatus.Running, handle.InitialRecord.Status);
+        Assert.False(handle.Completion.IsCompleted);
+        Assert.NotNull(started);
+        Assert.Equal(handle.Id, started.Id);
+
+        await engine.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(handle.Id, Assert.Single(manager.GetTasks()).Id);
+
+        engine.Complete(ScriptExecutionResult.Succeeded("ok"));
+        var final = await handle.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(handle.Id, final.Id);
+        Assert.Equal(ScriptTaskStatus.Completed, final.Status);
+        Assert.Equal(["ok"], final.ReturnValues);
+    }
+
+    [Fact]
+    public async Task Start_completion_fires_TaskCompleted()
+    {
+        var engine = new FakeScriptEngine();
+        var manager = CreateManager(engine, ScriptLanguage.JavaScript);
+        ScriptTaskRecord? completed = null;
+        manager.TaskCompleted += (_, task) => completed = task;
+
+        var handle = manager.Start(new ScriptExecutionRequest { Language = ScriptLanguage.JavaScript });
+        await engine.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        engine.Complete(ScriptExecutionResult.Succeeded("done"));
+        var final = await handle.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.NotNull(completed);
+        Assert.Equal(final.Id, completed.Id);
+        Assert.Equal(ScriptTaskStatus.Completed, completed.Status);
+    }
+
+    [Fact]
+    public async Task Stop_can_cancel_task_immediately_after_Start_returns()
+    {
+        var engine = new FakeScriptEngine
+        {
+            ExecuteAsyncHandler = async (_, cancellationToken) =>
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return ScriptExecutionResult.Succeeded();
+            }
+        };
+        var manager = CreateManager(engine, ScriptLanguage.JavaScript);
+
+        var handle = manager.Start(new ScriptExecutionRequest { Language = ScriptLanguage.JavaScript });
+
+        Assert.True(manager.Stop(handle.Id));
+        var final = await handle.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(ScriptTaskStatus.Canceled, final.Status);
+    }
+
+    [Fact]
+    public async Task StopAll_cancels_tasks_started_with_Start()
+    {
+        var engines = new Queue<FakeScriptEngine>(
+        [
+            new FakeScriptEngine
+            {
+                ExecuteAsyncHandler = async (_, cancellationToken) =>
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    return ScriptExecutionResult.Succeeded();
+                }
+            },
+            new FakeScriptEngine
+            {
+                ExecuteAsyncHandler = async (_, cancellationToken) =>
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    return ScriptExecutionResult.Succeeded();
+                }
+            }
+        ]);
+        var factory = new ScriptEngineFactory();
+        factory.Register(ScriptLanguage.JavaScript, _ => engines.Dequeue());
+        var manager = new ScriptTaskManager(factory);
+
+        var first = manager.Start(new ScriptExecutionRequest { Language = ScriptLanguage.JavaScript });
+        var second = manager.Start(new ScriptExecutionRequest { Language = ScriptLanguage.JavaScript });
+
+        Assert.Equal(2, manager.StopAll());
+
+        Assert.Equal(ScriptTaskStatus.Canceled, (await first.Completion.WaitAsync(TimeSpan.FromSeconds(5))).Status);
+        Assert.Equal(ScriptTaskStatus.Canceled, (await second.Completion.WaitAsync(TimeSpan.FromSeconds(5))).Status);
+    }
+
+    [Fact]
     public async Task StartAsync_tracks_running_task_and_completed_result()
     {
         var engine = new FakeScriptEngine();
@@ -59,6 +170,35 @@ public sealed class ScriptTaskManagerTests
         Assert.Equal(final.Id, lookup.Id);
         Assert.Equal(final.Status, lookup.Status);
         Assert.Equal(final.ReturnValues, lookup.ReturnValues);
+    }
+
+    [Fact]
+    public async Task StartAsync_still_returns_final_task_record()
+    {
+        var engine = new FakeScriptEngine();
+        var manager = CreateManager(engine, ScriptLanguage.JavaScript);
+
+        var task = manager.StartAsync(new ScriptExecutionRequest { Language = ScriptLanguage.JavaScript });
+        await engine.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        engine.Complete(ScriptExecutionResult.Succeeded("final"));
+        var final = await task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(ScriptTaskStatus.Completed, final.Status);
+        Assert.Equal(["final"], final.ReturnValues);
+    }
+
+    [Fact]
+    public async Task Start_returns_failed_completion_for_unregistered_language()
+    {
+        var manager = new ScriptTaskManager(new ScriptEngineFactory());
+
+        var handle = manager.Start(new ScriptExecutionRequest { Language = ScriptLanguage.JavaScript });
+        var final = await handle.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(handle.Id, final.Id);
+        Assert.Equal(ScriptTaskStatus.Failed, final.Status);
+        Assert.Contains("No script engine is registered", final.Error);
     }
 
     [Fact]
