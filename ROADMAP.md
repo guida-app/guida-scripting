@@ -42,6 +42,7 @@ The public project should be an embeddable scripting runtime and host API framew
 - Phase 2 has implemented host-neutral capabilities for logging, document loading, workspace access, HTTP, secrets primitives, store, queue, worker jobs, search, and workflow ledger core.
 - Workflow work currently covers ledger lifecycle, bulk mutation, schema validation/provider contracts, queue/worker bridge helpers, workspace layout/discovery, active-workflow overlay modeling, workspace module-resolution helpers, workflow workspace management/read models, and workflow ledger administration/read models; script-facing adapters remain later slices.
 - Phase 3 has implemented dependency-free public API registry descriptor contracts, an initial extracted-capability registry for store, queue, workers, workflow ledger/workflows, and workspace access, deterministic TypeScript definition generation, portable manifest generation, Markdown documentation generation, and completion/hover/signature-help metadata helpers from the public registry.
+- Phase 4 has implemented optional concrete engine adapters in `Guida.Scripting.Engines` for ClearScript JavaScript/TypeScript registration, LuaCSharp Lua execution, and JanetSharp Janet execution. The core `Guida.Scripting` project remains free of concrete engine dependencies.
 - `ROADMAP.md` remains an internal engineering checklist and is not public-facing.
 
 ## Phase 0: Repository Baseline — Done
@@ -228,14 +229,16 @@ Acceptance criteria:
 - API registry tests prove every public method has stable names, docs, parameters, and return metadata.
 - Extracted API metadata preserves Guida-compatible script-facing names and TypeScript shapes unless the compatibility tracker records an intentional divergence.
 
-## Phase 4: Engine Implementations
+## Phase 4: Engine Implementations — Done
 
 - Port ClearScript integration for JavaScript.
 - Port LuaCSharp integration for Lua.
 - Port JanetSharp integration for Janet.
 - Keep engine-specific interop helpers isolated behind common runtime contracts.
 - Preserve shared behavior for logging, return values, task cancellation, host capability errors, and timeout handling.
-- Document language-specific differences where exact parity is not practical.
+- Keep engine dependencies isolated in the optional `Guida.Scripting.Engines` project rather than the dependency-free core package.
+- JavaScript imports use standard ES module syntax through `IScriptDocumentProvider`; the SDK still does not add include preprocessing or generic source rewriting.
+- Lua and Janet keep their native runtime behavior; workspace-specific module loading beyond the common document boundary remains adapter/future work.
 
 Acceptance criteria:
 

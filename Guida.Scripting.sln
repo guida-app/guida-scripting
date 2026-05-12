@@ -7,6 +7,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Guida.Scripting", "src\Guid
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Guida.Scripting.Tests", "tests\Guida.Scripting.Tests\Guida.Scripting.Tests.csproj", "{DBC7568F-2F2D-496C-A55A-74118C0F69F2}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Guida.Scripting.Engines", "src\Guida.Scripting.Engines\Guida.Scripting.Engines.csproj", "{26D0F25A-F28B-46F0-8AD7-1BB1C237BE01}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -41,6 +43,18 @@ Global
 		{DBC7568F-2F2D-496C-A55A-74118C0F69F2}.Release|x64.Build.0 = Release|Any CPU
 		{DBC7568F-2F2D-496C-A55A-74118C0F69F2}.Release|x86.ActiveCfg = Release|Any CPU
 		{DBC7568F-2F2D-496C-A55A-74118C0F69F2}.Release|x86.Build.0 = Release|Any CPU
+		{26D0F25A-F28B-46F0-8AD7-1BB1C237BE01}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{26D0F25A-F28B-46F0-8AD7-1BB1C237BE01}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{26D0F25A-F28B-46F0-8AD7-1BB1C237BE01}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{26D0F25A-F28B-46F0-8AD7-1BB1C237BE01}.Debug|x64.Build.0 = Debug|Any CPU
+		{26D0F25A-F28B-46F0-8AD7-1BB1C237BE01}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{26D0F25A-F28B-46F0-8AD7-1BB1C237BE01}.Debug|x86.Build.0 = Debug|Any CPU
+		{26D0F25A-F28B-46F0-8AD7-1BB1C237BE01}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{26D0F25A-F28B-46F0-8AD7-1BB1C237BE01}.Release|Any CPU.Build.0 = Release|Any CPU
+		{26D0F25A-F28B-46F0-8AD7-1BB1C237BE01}.Release|x64.ActiveCfg = Release|Any CPU
+		{26D0F25A-F28B-46F0-8AD7-1BB1C237BE01}.Release|x64.Build.0 = Release|Any CPU
+		{26D0F25A-F28B-46F0-8AD7-1BB1C237BE01}.Release|x86.ActiveCfg = Release|Any CPU
+		{26D0F25A-F28B-46F0-8AD7-1BB1C237BE01}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
