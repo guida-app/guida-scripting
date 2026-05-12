@@ -41,6 +41,7 @@ The public project should be an embeddable scripting runtime and host API framew
 - Use `-m:1` for solution-level restore, build, and test commands because the current Windows/sandbox environment has unreliable parallel MSBuild/Roslyn named-pipe behavior.
 - Phase 2 has implemented host-neutral capabilities for logging, document loading, workspace access, HTTP, secrets primitives, store, queue, worker jobs, search, and workflow ledger core.
 - Workflow work currently covers ledger lifecycle, bulk mutation, schema validation/provider contracts, queue/worker bridge helpers, workspace layout/discovery, active-workflow overlay modeling, workspace module-resolution helpers, workflow workspace management/read models, and workflow ledger administration/read models; script-facing adapters remain later slices.
+- Phase 3 has started with dependency-free public API registry descriptor contracts and an initial extracted-capability registry for store, queue, workers, workflow ledger/workflows, and workspace access. TypeScript, docs, manifest, and completion generators remain later Phase 3 slices.
 - `ROADMAP.md` remains an internal engineering checklist and is not public-facing.
 
 ## Phase 0: Repository Baseline — Done
@@ -196,6 +197,17 @@ Acceptance criteria:
 
 ## Phase 3: Public API Registry
 
+- Add dependency-free descriptor models for script API types, parameters, properties, functions, interfaces, groups, and registry documents.
+- Add a registry provider contract that hosts and future language adapters can consume without depending on generators or private host services.
+- Add an initial public-safe extracted-capability registry for:
+  - `g.store`;
+  - `g.queue`;
+  - `g.workers`;
+  - `g.worker`;
+  - `g.worker.workflow`;
+  - `g.workflow`;
+  - `g.workflows`;
+  - logical workspace access.
 - Split API metadata into public-safe and private Guida-only groups.
 - Generate TypeScript definitions only from the public-safe registry.
 - Generate API docs/manifests only from the public-safe registry.
@@ -203,9 +215,11 @@ Acceptance criteria:
 - Keep admin, MCP-only, UI-only, and ledger maintenance operations out of script-facing API metadata unless they are deliberately promoted to public script APIs.
 - Keep private API groups for browser DOM automation, tabs, interception, capture, screenshots, scraping, extraction, desktop panes, and closed Guida workflow behavior out of this repo.
 - Add leak tests that fail if private namespace names or browser implementation types appear in generated public artifacts.
+- Do not copy generated private manifests or generated definition files into this repository. Future generators should emit public artifacts from the SDK registry at build/test time.
 
 Acceptance criteria:
 
+- API registry descriptor tests cover type formatting, structural validity, duplicate detection, namespace/group metadata, stable script-facing names, key TypeScript declaration strings, and public/private namespace boundaries.
 - Public generated artifacts do not include private namespaces such as browser DOM automation, tabs, interception, capture, screenshots, scraping, extraction, or desktop panes.
 - API registry tests prove every public method has stable names, docs, parameters, and return metadata.
 - Extracted API metadata preserves Guida-compatible script-facing names and TypeScript shapes unless the compatibility tracker records an intentional divergence.
