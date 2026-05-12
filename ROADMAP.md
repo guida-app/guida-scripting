@@ -40,7 +40,7 @@ The public project should be an embeddable scripting runtime and host API framew
 - The solution targets plain `net9.0` and is pinned to .NET SDK `9.0.308` through `global.json`.
 - Use `-m:1` for solution-level restore, build, and test commands because the current Windows/sandbox environment has unreliable parallel MSBuild/Roslyn named-pipe behavior.
 - Phase 2 has implemented host-neutral capabilities for logging, document loading, workspace access, HTTP, secrets primitives, store, queue, worker jobs, search, and workflow ledger core.
-- Workflow ledger core currently covers lifecycle, bulk mutation, and schema validation/provider contracts; retention/export/import/read-model operations, workflow layout loading, queue/worker bridge helpers, and script-facing adapters remain later slices.
+- Workflow work currently covers ledger lifecycle, bulk mutation, schema validation/provider contracts, and queue/worker bridge helpers; retention/export/import/read-model operations, workflow layout loading, workflow inspection/switching, and script-facing adapters remain later slices.
 - `ROADMAP.md` remains an internal engineering checklist and is not public-facing.
 
 ## Phase 0: Repository Baseline — Done
@@ -185,7 +185,8 @@ Acceptance criteria:
 - Public engine contexts depend only on public capability interfaces.
 - Tests verify clear errors when a script calls a capability that the host did not provide.
 - Workflow capability tests preserve existing script-facing `g.workflow`, `g.workflows`, and `g.worker.workflow` behavior when those surfaces are extracted.
-- Workflow ledger tests cover lifecycle, cancellation, bulk mutation, schema validation/provider behavior, queue enqueue idempotency, and worker task-id context.
+- Workflow ledger core tests cover lifecycle, cancellation, bulk mutation, and schema validation/provider behavior.
+- Workflow queue/worker bridge tests cover enqueue envelope payloads, enqueue idempotency, and task-id-aware worker workflow context.
 - Retention, export/import, overview, transition graph, and flow evidence tests are required if those operations are included in a public ledger capability.
 - `COMPATIBILITY_TRACKER.md` is updated when each workflow slice lands.
 - No public project file references closed-source or desktop-only packages.
