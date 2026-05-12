@@ -59,6 +59,8 @@ public sealed record ScriptWorkflowWorkspaceDiscoveryOptions
 public enum ScriptWorkflowWorkspaceErrorCode
 {
     InvalidRequest,
+    NotFound,
+    AlreadyExists,
     WorkspaceError
 }
 
