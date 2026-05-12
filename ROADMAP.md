@@ -41,7 +41,7 @@ The public project should be an embeddable scripting runtime and host API framew
 - Use `-m:1` for solution-level restore, build, and test commands because the current Windows/sandbox environment has unreliable parallel MSBuild/Roslyn named-pipe behavior.
 - Phase 2 has implemented host-neutral capabilities for logging, document loading, workspace access, HTTP, secrets primitives, store, queue, worker jobs, search, and workflow ledger core.
 - Workflow work currently covers ledger lifecycle, bulk mutation, schema validation/provider contracts, queue/worker bridge helpers, workspace layout/discovery, active-workflow overlay modeling, workspace module-resolution helpers, workflow workspace management/read models, and workflow ledger administration/read models; script-facing adapters remain later slices.
-- Phase 3 has started with dependency-free public API registry descriptor contracts, an initial extracted-capability registry for store, queue, workers, workflow ledger/workflows, and workspace access, and deterministic TypeScript definition generation from the public registry. Docs, manifest, and completion generators remain later Phase 3 slices.
+- Phase 3 has implemented dependency-free public API registry descriptor contracts, an initial extracted-capability registry for store, queue, workers, workflow ledger/workflows, and workspace access, deterministic TypeScript definition generation, portable manifest generation, Markdown documentation generation, and completion/hover/signature-help metadata helpers from the public registry.
 - `ROADMAP.md` remains an internal engineering checklist and is not public-facing.
 
 ## Phase 0: Repository Baseline — Done
@@ -195,7 +195,7 @@ Acceptance criteria:
 - `COMPATIBILITY_TRACKER.md` is updated when each workflow slice lands.
 - No public project file references closed-source or desktop-only packages.
 
-## Phase 3: Public API Registry
+## Phase 3: Public API Registry — Done
 
 - Add dependency-free descriptor models for script API types, parameters, properties, functions, interfaces, groups, and registry documents.
 - Add a registry provider contract that hosts and future language adapters can consume without depending on generators or private host services.
@@ -212,6 +212,7 @@ Acceptance criteria:
 - Generate TypeScript definitions only from the public-safe registry.
 - Keep SDK TypeScript generation deterministic: no timestamps, no filesystem-loaded runtime globals, and no private generated artifacts copied into the public repository.
 - Generate API docs/manifests only from the public-safe registry.
+- Generate editor-friendly completion, hover, and function lookup metadata only from the public-safe registry.
 - Treat `g.workflow` ledger APIs, `g.workflows` workflow discovery/switching APIs, and `g.worker.workflow` worker-item helpers as distinct compatibility targets.
 - Keep admin, MCP-only, UI-only, and ledger maintenance operations out of script-facing API metadata unless they are deliberately promoted to public script APIs.
 - Keep private API groups for browser DOM automation, tabs, interception, capture, screenshots, scraping, extraction, desktop panes, and closed Guida workflow behavior out of this repo.
@@ -222,6 +223,7 @@ Acceptance criteria:
 
 - API registry descriptor tests cover type formatting, structural validity, duplicate detection, namespace/group metadata, stable script-facing names, key TypeScript declaration strings, and public/private namespace boundaries.
 - TypeScript generator tests cover deterministic output, type aliases, interfaces, API groups, nested API interfaces, the main `Guida` interface, the global `g` declaration, custom generation options, invalid-registry failures, extracted surface declarations, and private namespace leak guards.
+- Manifest, Markdown documentation, and completion generator tests cover deterministic public output, sorted manifest data, extracted surface entries, hover/signature metadata, invalid-registry failures, and private namespace leak guards.
 - Public generated artifacts do not include private namespaces such as browser DOM automation, tabs, interception, capture, screenshots, scraping, extraction, or desktop panes.
 - API registry tests prove every public method has stable names, docs, parameters, and return metadata.
 - Extracted API metadata preserves Guida-compatible script-facing names and TypeScript shapes unless the compatibility tracker records an intentional divergence.
