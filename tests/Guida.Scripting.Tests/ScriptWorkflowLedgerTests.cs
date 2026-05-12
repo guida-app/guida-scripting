@@ -16,6 +16,17 @@ public sealed class ScriptWorkflowLedgerTests
     }
 
     [Fact]
+    public void Workflow_ledger_administration_can_be_registered_and_retrieved_from_host_context()
+    {
+        var ledger = new ScriptInMemoryWorkflowLedger();
+        var context = ScriptHostContext.Empty.WithCapability<IScriptWorkflowLedgerAdministration>(ledger);
+
+        Assert.True(context.TryGetCapability<IScriptWorkflowLedgerAdministration>(out var found));
+        Assert.Same(ledger, found);
+        Assert.Same(ledger, context.GetCapability<IScriptWorkflowLedgerAdministration>());
+    }
+
+    [Fact]
     public void Missing_workflow_ledger_uses_capability_unavailable_reporting()
     {
         var unavailable = ScriptCapabilityUnavailable.For<IScriptWorkflowLedger>();
@@ -402,9 +413,349 @@ public sealed class ScriptWorkflowLedgerTests
     }
 
     [Fact]
+    public async Task Retention_preview_and_prune_old_terminal_history()
+    {
+        var ledger = new ScriptInMemoryWorkflowLedger();
+        var admin = (IScriptWorkflowLedgerAdministration)ledger;
+        var old = DateTimeOffset.UtcNow.AddDays(-30);
+        var recent = DateTimeOffset.UtcNow.AddDays(-1);
+        var import = new ScriptWorkflowLedgerExport
+        {
+            Runs =
+            [
+                new ScriptWorkflowRun
+                {
+                    Id = "old-run",
+                    WorkflowName = "crawl",
+                    Status = "completed",
+                    StartedAt = old.AddMinutes(-5),
+                    FinishedAt = old
+                },
+                new ScriptWorkflowRun
+                {
+                    Id = "recent-run",
+                    WorkflowName = "crawl",
+                    Status = "completed",
+                    StartedAt = recent.AddMinutes(-5),
+                    FinishedAt = recent
+                }
+            ],
+            Items =
+            [
+                new ScriptWorkflowItem
+                {
+                    Id = "old-item",
+                    WorkflowName = "crawl",
+                    ItemKey = "old",
+                    RunId = "old-run",
+                    Stage = "fetch",
+                    State = "completed",
+                    CreatedAt = old.AddMinutes(-4),
+                    UpdatedAt = old
+                },
+                new ScriptWorkflowItem
+                {
+                    Id = "standalone",
+                    WorkflowName = "crawl",
+                    ItemKey = "standalone",
+                    Stage = "fetch",
+                    State = "dead",
+                    CreatedAt = old.AddMinutes(-3),
+                    UpdatedAt = old
+                },
+                new ScriptWorkflowItem
+                {
+                    Id = "recent-item",
+                    WorkflowName = "crawl",
+                    ItemKey = "recent",
+                    RunId = "recent-run",
+                    Stage = "fetch",
+                    State = "completed",
+                    CreatedAt = recent.AddMinutes(-4),
+                    UpdatedAt = recent
+                }
+            ],
+            Events =
+            [
+                new ScriptWorkflowEvent
+                {
+                    Id = "old-event",
+                    ItemId = "old-item",
+                    RunId = "old-run",
+                    EventType = "completed",
+                    CreatedAt = old
+                },
+                new ScriptWorkflowEvent
+                {
+                    Id = "standalone-event",
+                    ItemId = "standalone",
+                    EventType = "dead_lettered",
+                    CreatedAt = old
+                }
+            ],
+            Artifacts =
+            [
+                new ScriptWorkflowArtifact
+                {
+                    Id = "old-artifact",
+                    ItemId = "old-item",
+                    ArtifactKind = "file",
+                    ArtifactRef = "out.json",
+                    CreatedAt = old
+                }
+            ]
+        };
+        var imported = await admin.ImportHistoryAsync(import);
+
+        var skippedStandalone = await admin.PreviewRetentionAsync(new ScriptWorkflowLedgerRetentionOptions
+        {
+            WorkflowName = "crawl",
+            OlderThanUtc = DateTimeOffset.UtcNow.AddDays(-7),
+            IncludeStandaloneTerminalItems = false
+        });
+        var preview = await admin.PreviewRetentionAsync(new ScriptWorkflowLedgerRetentionOptions
+        {
+            WorkflowName = "crawl",
+            OlderThanUtc = DateTimeOffset.UtcNow.AddDays(-7)
+        });
+        var pruned = await admin.PruneRetentionAsync(new ScriptWorkflowLedgerRetentionOptions
+        {
+            WorkflowName = "crawl",
+            OlderThanUtc = DateTimeOffset.UtcNow.AddDays(-7),
+            Vacuum = true
+        });
+        var oldRun = await ledger.GetRunAsync("old-run");
+        var oldItem = await ledger.GetItemByIdAsync("old-item");
+        var recentRun = await ledger.GetRunAsync("recent-run");
+
+        Assert.True(imported.Success, imported.Error?.Message);
+        Assert.True(skippedStandalone.Success, skippedStandalone.Error?.Message);
+        Assert.Equal(1, skippedStandalone.Value!.RunsDeleted);
+        Assert.Equal(1, skippedStandalone.Value.ItemsDeleted);
+        Assert.True(preview.Success, preview.Error?.Message);
+        Assert.Equal(new ScriptWorkflowLedgerRetentionResult(1, 2, 2, 1, false, true), preview.Value);
+        Assert.True(pruned.Success, pruned.Error?.Message);
+        Assert.Equal(new ScriptWorkflowLedgerRetentionResult(1, 2, 2, 1, true, false), pruned.Value);
+        Assert.False(oldRun.Success);
+        Assert.Equal(ScriptWorkflowLedgerErrorCode.NotFound, oldRun.Error?.Code);
+        Assert.False(oldItem.Success);
+        Assert.True(recentRun.Success, recentRun.Error?.Message);
+    }
+
+    [Fact]
+    public async Task Export_and_import_history_round_trip_and_skip_existing_ids()
+    {
+        var ledger = new ScriptInMemoryWorkflowLedger();
+        var admin = (IScriptWorkflowLedgerAdministration)ledger;
+        var run = await ledger.StartRunAsync("crawl", new ScriptWorkflowRunOptions { MetadataJson = """{"run":true}""" });
+        var item = await Upsert(ledger, "item", runId: run.Value!.Id, metadataJson: """{"item":true}""");
+        var evt = await ledger.AppendEventAsync(item.Value!.Id, new ScriptWorkflowEventAppend { EventType = "seen", MetadataJson = """{"event":true}""" });
+        var artifact = await ledger.AttachArtifactAsync(
+            item.Value.Id,
+            new ScriptWorkflowArtifactAttach
+            {
+                EventId = evt.Value!.Id,
+                ArtifactKind = "file",
+                ArtifactRef = "out.json",
+                MetadataJson = """{"artifact":true}"""
+            });
+        await Upsert(ledger, "other", workflowName: "other");
+
+        var exported = await admin.ExportHistoryAsync(new ScriptWorkflowLedgerExportOptions { WorkflowName = "crawl" });
+        var exportedWithoutTimeline = await admin.ExportHistoryAsync(new ScriptWorkflowLedgerExportOptions
+        {
+            WorkflowName = "crawl",
+            IncludeEvents = false,
+            IncludeArtifacts = false
+        });
+        var importedLedger = new ScriptInMemoryWorkflowLedger();
+        var importedAdmin = (IScriptWorkflowLedgerAdministration)importedLedger;
+        var imported = await importedAdmin.ImportHistoryAsync(exported.Value!);
+        var reimported = await importedAdmin.ImportHistoryAsync(exported.Value!);
+        var importedRun = await importedLedger.GetRunAsync(run.Value.Id);
+        var importedItem = await importedLedger.GetItemByIdAsync(item.Value.Id);
+        var importedEvents = await importedLedger.GetEventsForItemAsync(item.Value.Id);
+        var importedArtifacts = await importedLedger.GetArtifactsForItemAsync(item.Value.Id);
+
+        Assert.True(exported.Success, exported.Error?.Message);
+        Assert.Single(exported.Value!.Runs);
+        Assert.Single(exported.Value.Items);
+        Assert.Single(exported.Value.Events);
+        Assert.Single(exported.Value.Artifacts);
+        Assert.Equal(artifact.Value!.Id, exported.Value.Artifacts[0].Id);
+        Assert.True(exportedWithoutTimeline.Success, exportedWithoutTimeline.Error?.Message);
+        Assert.Empty(exportedWithoutTimeline.Value!.Events);
+        Assert.Empty(exportedWithoutTimeline.Value.Artifacts);
+        Assert.True(imported.Success, imported.Error?.Message);
+        Assert.Equal(1, imported.Value!.RunsInserted);
+        Assert.Equal(1, imported.Value.ItemsInserted);
+        Assert.Equal(1, imported.Value.EventsInserted);
+        Assert.Equal(1, imported.Value.ArtifactsInserted);
+        Assert.True(reimported.Success, reimported.Error?.Message);
+        Assert.Equal(1, reimported.Value!.RunsSkipped);
+        Assert.Equal(1, reimported.Value.ItemsSkipped);
+        Assert.True(importedRun.Success, importedRun.Error?.Message);
+        Assert.Equal("""{"run":true}""", importedRun.Value!.MetadataJson);
+        Assert.Equal("""{"item":true}""", importedItem.Value!.MetadataJson);
+        Assert.Equal("""{"event":true}""", importedEvents.Value!.Single().MetadataJson);
+        Assert.Equal("""{"artifact":true}""", importedArtifacts.Value!.Single().MetadataJson);
+    }
+
+    [Fact]
+    public async Task Overview_aggregates_workflow_run_and_item_attention()
+    {
+        var ledger = new ScriptInMemoryWorkflowLedger();
+        var admin = (IScriptWorkflowLedgerAdministration)ledger;
+        var now = new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
+        var runningRun = await ledger.StartRunAsync("wf");
+        var failedRun = await ledger.StartRunAsync("wf");
+        await ledger.FailRunAsync(failedRun.Value!.Id, new ScriptWorkflowRunFailOptions { Error = "run failed" });
+        await ledger.StartRunAsync("other");
+        await Upsert(ledger, "pending", workflowName: "wf", runId: runningRun.Value!.Id);
+        await Upsert(ledger, "completed", workflowName: "wf", runId: runningRun.Value.Id, state: "completed");
+        await Upsert(ledger, "retry-due", workflowName: "wf", runId: runningRun.Value.Id, state: "retry_ready", nextRetryAt: now.AddMinutes(-1));
+        await Upsert(ledger, "retry-future", workflowName: "wf", runId: runningRun.Value.Id, state: "retry_ready", nextRetryAt: now.AddMinutes(5));
+        var dead = await Upsert(ledger, "dead", workflowName: "wf", runId: runningRun.Value.Id);
+        await ledger.DeadLetterItemAsync(dead.Value!.Id, "bad input");
+        var failedItem = await Upsert(ledger, "failed", workflowName: "wf", runId: runningRun.Value.Id);
+        await ledger.SetItemStateAsync(failedItem.Value!.Id, new ScriptWorkflowStateUpdate { State = "failed", LastError = "failed item" });
+        var activeLease = await Upsert(ledger, "active-lease", workflowName: "wf", runId: runningRun.Value.Id);
+        await ledger.ClaimItemAsync(activeLease.Value!.Id, new ScriptWorkflowClaimOptions { LeaseOwner = "active", LeaseDuration = TimeSpan.FromMinutes(10), NowUtc = now });
+        var expiredLease = await Upsert(ledger, "expired-lease", workflowName: "wf", runId: runningRun.Value.Id);
+        await ledger.ClaimItemAsync(expiredLease.Value!.Id, new ScriptWorkflowClaimOptions { LeaseOwner = "expired", LeaseDuration = TimeSpan.FromMinutes(1), NowUtc = now.AddMinutes(-10) });
+        var otherDead = await Upsert(ledger, "dead", workflowName: "other");
+        await ledger.DeadLetterItemAsync(otherDead.Value!.Id, "other");
+
+        var overview = await admin.GetOverviewAsync(new ScriptWorkflowLedgerOverviewQuery
+        {
+            WorkflowName = "wf",
+            NowUtc = now,
+            AttentionTake = 10
+        });
+        var itemOverview = await admin.GetOverviewAsync(new ScriptWorkflowLedgerOverviewQuery
+        {
+            ItemId = failedItem.Value.Id,
+            NowUtc = now
+        });
+        var clipped = await admin.GetOverviewAsync(new ScriptWorkflowLedgerOverviewQuery
+        {
+            WorkflowName = "wf",
+            NowUtc = now,
+            AttentionTake = 1
+        });
+
+        Assert.True(overview.Success, overview.Error?.Message);
+        Assert.Equal(2, overview.Value!.TotalRuns);
+        Assert.Equal(8, overview.Value.TotalItems);
+        Assert.Equal(1, overview.Value.RunCountsByStatus["running"]);
+        Assert.Equal(1, overview.Value.RunCountsByStatus["failed"]);
+        Assert.Equal(2, overview.Value.ItemCountsByState["retry_ready"]);
+        Assert.Equal(1, overview.Value.RetryReadyCount);
+        Assert.Equal(1, overview.Value.ActiveLeaseCount);
+        Assert.Equal(1, overview.Value.ExpiredLeaseCount);
+        Assert.Equal(["expired_lease", "dead_item", "failed_item", "retry_ready", "failed_run"], overview.Value.AttentionItems.Select(item => item.Kind).Take(5).ToArray());
+        Assert.All(overview.Value.AttentionItems, item => Assert.Equal("wf", item.WorkflowName));
+        Assert.True(itemOverview.Success, itemOverview.Error?.Message);
+        Assert.Equal(1, itemOverview.Value!.TotalItems);
+        Assert.Equal(1, itemOverview.Value.TotalRuns);
+        Assert.Contains(itemOverview.Value.AttentionItems, item => item.ItemId == failedItem.Value.Id && item.LastError == "failed item");
+        Assert.True(clipped.Success, clipped.Error?.Message);
+        Assert.Single(clipped.Value!.AttentionItems);
+    }
+
+    [Fact]
+    public async Task Transition_graph_builds_observed_edges_and_schema_overlay()
+    {
+        var validator = ScriptWorkflowLedgerSchemaValidator.FromJsonByWorkflow(new Dictionary<string, string>
+        {
+            ["wf"] = """
+            {
+              "version": 1,
+              "stages": ["discover", "fetch", "review"],
+              "states": ["pending", "running", "retry_ready", "dead"],
+              "transitions": [
+                { "fromStage": "discover", "fromState": "pending", "toStage": "fetch", "toState": "running" },
+                { "fromStage": "fetch", "fromState": "running", "toStage": "fetch", "toState": "retry_ready" },
+                { "fromStage": "fetch", "fromState": "retry_ready", "toStage": "review", "toState": "dead" }
+              ]
+            }
+            """
+        });
+        var ledger = new ScriptInMemoryWorkflowLedger(validator);
+        var admin = (IScriptWorkflowLedgerAdministration)ledger;
+        var run = await ledger.StartRunAsync("wf");
+        var item = await Upsert(ledger, "item", workflowName: "wf", runId: run.Value!.Id, stage: "review", state: "dead");
+        await ledger.AppendEventAsync(item.Value!.Id, new ScriptWorkflowEventAppend { EventType = "created", Stage = "discover", State = "pending" });
+        await ledger.AppendEventAsync(item.Value.Id, new ScriptWorkflowEventAppend { EventType = "claimed", Stage = "fetch", State = "running" });
+        await ledger.AppendEventAsync(item.Value.Id, new ScriptWorkflowEventAppend { EventType = "retry_scheduled", Stage = "fetch", State = "retry_ready", Error = "timeout" });
+        await ledger.AppendEventAsync(item.Value.Id, new ScriptWorkflowEventAppend { EventType = "dead_lettered", Stage = "review", State = "dead", Error = "bad input" });
+
+        var graph = await admin.GetTransitionGraphAsync(new ScriptWorkflowTransitionGraphQuery { WorkflowName = "wf" });
+        var none = await admin.GetTransitionGraphAsync(new ScriptWorkflowTransitionGraphQuery { WorkflowName = "wf", Take = 0 });
+
+        Assert.True(graph.Success, graph.Error?.Message);
+        Assert.Equal(1, graph.Value!.TotalItems);
+        Assert.Equal(3, graph.Value.TotalTransitions);
+        Assert.Equal(ScriptWorkflowTransitionSchemaStatus.ActiveSchema, graph.Value.SchemaStatus);
+        Assert.Equal(3, graph.Value.AllowedTransitionCount);
+        Assert.Equal(0, graph.Value.UnexpectedTransitionCount);
+        Assert.Contains(graph.Value.Nodes, node => node.Stage == "review" && node.State == "dead" && node.CurrentItemCount == 1);
+        Assert.Contains(graph.Value.Nodes, node => node.Stage == "fetch" && node.State == "retry_ready" && node.ErrorCount == 1);
+        Assert.Contains(graph.Value.Edges, edge =>
+            edge.FromStage == "discover" &&
+            edge.FromState == "pending" &&
+            edge.ToStage == "fetch" &&
+            edge.ToState == "running" &&
+            edge.SampleItemId == item.Value.Id &&
+            edge.SchemaStatus == ScriptWorkflowTransitionSchemaStatus.Allowed);
+        Assert.Contains(graph.Value.Edges, edge => edge.ToState == "retry_ready" && edge.RetryCount == 1 && edge.ErrorCount == 1);
+        Assert.Contains(graph.Value.Edges, edge => edge.ToState == "dead" && edge.DeadLetterCount == 1 && edge.ErrorCount == 1);
+        Assert.True(none.Success, none.Error?.Message);
+        Assert.Empty(none.Value!.Nodes);
+        Assert.Empty(none.Value.Edges);
+    }
+
+    [Fact]
+    public async Task Flow_evidence_groups_queue_metadata_and_problem_counts()
+    {
+        var ledger = new ScriptInMemoryWorkflowLedger();
+        var admin = (IScriptWorkflowLedgerAdministration)ledger;
+        var run = await ledger.StartRunAsync("wf");
+        var queued = await Upsert(ledger, "queued", workflowName: "wf", runId: run.Value!.Id, state: "queued");
+        var dead = await Upsert(ledger, "dead", workflowName: "wf", runId: run.Value.Id, state: "queued");
+        var otherQueue = await Upsert(ledger, "other", workflowName: "wf", runId: run.Value.Id, state: "queued");
+        await ledger.AppendEventAsync(queued.Value!.Id, QueueEvent("crawl_queue"));
+        await ledger.AppendEventAsync(dead.Value!.Id, QueueEvent("crawl_queue"));
+        await ledger.AppendEventAsync(otherQueue.Value!.Id, QueueEvent("other_queue"));
+        await ledger.AppendEventAsync(queued.Value.Id, new ScriptWorkflowEventAppend { EventType = "queued", MetadataJson = "{not json" });
+        await ledger.DeadLetterItemAsync(dead.Value.Id, "bad input");
+
+        var evidence = await admin.GetFlowEvidenceAsync(new ScriptWorkflowFlowEvidenceQuery { WorkflowName = "wf" });
+        var runEvidence = await admin.GetFlowEvidenceAsync(new ScriptWorkflowFlowEvidenceQuery { RunId = run.Value.Id });
+        var none = await admin.GetFlowEvidenceAsync(new ScriptWorkflowFlowEvidenceQuery { WorkflowName = "wf", Take = 0 });
+
+        Assert.True(evidence.Success, evidence.Error?.Message);
+        Assert.Equal(3, evidence.Value!.TotalItems);
+        Assert.Equal(2, evidence.Value.ItemCountsByState["queued"]);
+        Assert.Equal(1, evidence.Value.ItemCountsByState["dead"]);
+        Assert.Contains("crawl_queue", evidence.Value.Queues.Keys);
+        Assert.Equal(2, evidence.Value.Queues["crawl_queue"].ItemCount);
+        Assert.Equal(1, evidence.Value.Queues["crawl_queue"].ProblemCount);
+        Assert.Equal(1, evidence.Value.Queues["crawl_queue"].ItemCountsByState["queued"]);
+        Assert.Equal(1, evidence.Value.Queues["crawl_queue"].ItemCountsByState["dead"]);
+        Assert.NotNull(evidence.Value.Queues["crawl_queue"].SampleItemId);
+        Assert.True(runEvidence.Success, runEvidence.Error?.Message);
+        Assert.Equal(3, runEvidence.Value!.TotalItems);
+        Assert.True(none.Success, none.Error?.Message);
+        Assert.Equal(0, none.Value!.TotalItems);
+        Assert.Empty(none.Value.Queues);
+    }
+
+    [Fact]
     public async Task Public_methods_observe_cancellation_tokens()
     {
         var ledger = new ScriptInMemoryWorkflowLedger();
+        var admin = (IScriptWorkflowLedgerAdministration)ledger;
         using var cts = new CancellationTokenSource();
         await cts.CancelAsync();
 
@@ -414,6 +765,10 @@ public sealed class ScriptWorkflowLedgerTests
             ledger.QueryItemsAsync(new ScriptWorkflowItemQuery(), cts.Token));
         await Assert.ThrowsAsync<OperationCanceledException>(() =>
             ledger.BulkRetryItemsAsync(new ScriptWorkflowBulkMutationRequest(), cts.Token));
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            admin.GetOverviewAsync(new ScriptWorkflowLedgerOverviewQuery(), cts.Token));
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            admin.ExportHistoryAsync(new ScriptWorkflowLedgerExportOptions(), cts.Token));
     }
 
     private static Task<ScriptWorkflowLedgerResult<ScriptWorkflowItem>> Upsert(
@@ -441,4 +796,11 @@ public sealed class ScriptWorkflowLedgerTests
             MetadataJson = metadataJson
         });
     }
+
+    private static ScriptWorkflowEventAppend QueueEvent(string queueName) =>
+        new()
+        {
+            EventType = "queued",
+            MetadataJson = $$"""{"queueName":"{{queueName}}"}"""
+        };
 }

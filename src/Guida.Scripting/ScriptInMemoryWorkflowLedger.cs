@@ -1,11 +1,12 @@
 using System.Collections.ObjectModel;
+using System.Text.Json;
 
 namespace Guida.Scripting;
 
 /// <summary>
 /// In-memory workflow ledger for tests, samples, and simple hosts.
 /// </summary>
-public sealed class ScriptInMemoryWorkflowLedger : IScriptWorkflowLedger
+public sealed class ScriptInMemoryWorkflowLedger : IScriptWorkflowLedger, IScriptWorkflowLedgerAdministration
 {
     private const int MaxTake = 1000;
 
@@ -895,6 +896,516 @@ public sealed class ScriptInMemoryWorkflowLedger : IScriptWorkflowLedger
         return ExecuteBulkMutation(request!, item => DeadLetterItemCore(item, reason.Value!));
     }
 
+    /// <inheritdoc />
+    public Task<ScriptWorkflowLedgerResult<ScriptWorkflowLedgerRetentionResult>> PreviewRetentionAsync(
+        ScriptWorkflowLedgerRetentionOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ExecuteRetention(options, dryRun: true);
+    }
+
+    /// <inheritdoc />
+    public Task<ScriptWorkflowLedgerResult<ScriptWorkflowLedgerRetentionResult>> PruneRetentionAsync(
+        ScriptWorkflowLedgerRetentionOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ExecuteRetention(options, dryRun: false);
+    }
+
+    /// <inheritdoc />
+    public Task<ScriptWorkflowLedgerResult<ScriptWorkflowLedgerExport>> ExportHistoryAsync(
+        ScriptWorkflowLedgerExportOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (options == null)
+        {
+            return Task.FromResult(ScriptWorkflowLedgerResult<ScriptWorkflowLedgerExport>.Failed(
+                Error(ScriptWorkflowLedgerErrorCode.InvalidRequest, message: "Workflow ledger export options are required.")));
+        }
+
+        lock (_gate)
+        {
+            var take = ClampTake(options.Take);
+            var workflowName = TrimToNull(options.WorkflowName);
+            var runId = TrimToNull(options.RunId);
+            var itemIds = options.ItemIds?
+                .Select(TrimToNull)
+                .Where(id => id != null)
+                .Select(id => id!)
+                .Distinct(StringComparer.Ordinal)
+                .Take(take)
+                .ToArray();
+
+            var items = new List<ItemState>();
+            if (itemIds is { Length: > 0 })
+            {
+                foreach (var itemId in itemIds)
+                {
+                    if (_items.TryGetValue(itemId, out var item))
+                    {
+                        items.Add(item);
+                    }
+                }
+            }
+            else if (runId != null)
+            {
+                items.AddRange(QueryItemStates(new ScriptWorkflowItemQuery { RunId = runId, Take = take }));
+            }
+            else
+            {
+                items.AddRange(QueryItemStates(new ScriptWorkflowItemQuery { WorkflowName = workflowName, Take = take }));
+            }
+
+            var runs = new Dictionary<string, RunState>(StringComparer.Ordinal);
+            if (itemIds is not { Length: > 0 })
+            {
+                if (runId != null)
+                {
+                    if (_runs.TryGetValue(runId, out var run))
+                    {
+                        runs[run.Id] = run;
+                    }
+                }
+                else
+                {
+                    foreach (var run in _runs.Values
+                        .Where(run => workflowName == null || run.WorkflowName == workflowName)
+                        .OrderByDescending(run => run.StartedAt)
+                        .ThenByDescending(run => run.Sequence)
+                        .Take(take))
+                    {
+                        runs[run.Id] = run;
+                    }
+                }
+            }
+
+            foreach (var referencedRunId in items.Select(item => item.RunId).Where(id => id != null).Distinct(StringComparer.Ordinal))
+            {
+                if (_runs.TryGetValue(referencedRunId!, out var run))
+                {
+                    runs[run.Id] = run;
+                }
+            }
+
+            var itemIdSet = items.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+            var events = options.IncludeEvents
+                ? _events
+                    .Where(evt => evt.ItemId != null && itemIdSet.Contains(evt.ItemId))
+                    .OrderBy(evt => evt.CreatedAt)
+                    .ThenBy(evt => evt.Sequence)
+                    .Select(ToEvent)
+                    .ToArray()
+                : Array.Empty<ScriptWorkflowEvent>();
+            var artifacts = options.IncludeArtifacts
+                ? _artifacts
+                    .Where(artifact => itemIdSet.Contains(artifact.ItemId))
+                    .OrderBy(artifact => artifact.CreatedAt)
+                    .ThenBy(artifact => artifact.Sequence)
+                    .Select(ToArtifact)
+                    .ToArray()
+                : Array.Empty<ScriptWorkflowArtifact>();
+
+            var export = new ScriptWorkflowLedgerExport
+            {
+                SchemaVersion = 1,
+                ExportedAt = DateTimeOffset.UtcNow,
+                Runs = runs.Values
+                    .OrderBy(run => run.StartedAt)
+                    .ThenBy(run => run.Id, StringComparer.Ordinal)
+                    .Select(ToRun)
+                    .ToArray(),
+                Items = items
+                    .OrderBy(item => item.CreatedAt)
+                    .ThenBy(item => item.Id, StringComparer.Ordinal)
+                    .Select(ToItem)
+                    .ToArray(),
+                Events = events,
+                Artifacts = artifacts
+            };
+
+            return Task.FromResult(ScriptWorkflowLedgerResult<ScriptWorkflowLedgerExport>.Succeeded(export));
+        }
+    }
+
+    /// <inheritdoc />
+    public Task<ScriptWorkflowLedgerResult<ScriptWorkflowLedgerImportResult>> ImportHistoryAsync(
+        ScriptWorkflowLedgerExport export,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (export == null)
+        {
+            return Task.FromResult(ScriptWorkflowLedgerResult<ScriptWorkflowLedgerImportResult>.Failed(
+                Error(ScriptWorkflowLedgerErrorCode.InvalidRequest, message: "Workflow ledger export is required.")));
+        }
+
+        var validation = ValidateImport(export);
+        if (!validation.Success)
+        {
+            return Task.FromResult(ScriptWorkflowLedgerResult<ScriptWorkflowLedgerImportResult>.Failed(validation.Error!));
+        }
+
+        lock (_gate)
+        {
+            var referenceValidation = ValidateImportReferences(export);
+            if (!referenceValidation.Success)
+            {
+                return Task.FromResult(ScriptWorkflowLedgerResult<ScriptWorkflowLedgerImportResult>.Failed(referenceValidation.Error!));
+            }
+
+            var runsInserted = 0;
+            var runsSkipped = 0;
+            var itemsInserted = 0;
+            var itemsSkipped = 0;
+            var eventsInserted = 0;
+            var eventsSkipped = 0;
+            var artifactsInserted = 0;
+            var artifactsSkipped = 0;
+
+            foreach (var run in export.Runs)
+            {
+                if (_runs.ContainsKey(run.Id))
+                {
+                    runsSkipped++;
+                    continue;
+                }
+
+                _runs[run.Id] = FromRun(run);
+                runsInserted++;
+            }
+
+            foreach (var item in export.Items)
+            {
+                if (_items.ContainsKey(item.Id))
+                {
+                    itemsSkipped++;
+                    continue;
+                }
+
+                var key = ItemKey(item.WorkflowName, item.ItemKey);
+                if (_itemIdsByKey.ContainsKey(key))
+                {
+                    return Task.FromResult(ScriptWorkflowLedgerResult<ScriptWorkflowLedgerImportResult>.Failed(
+                        Error(
+                            ScriptWorkflowLedgerErrorCode.InvalidRequest,
+                            workflowName: item.WorkflowName,
+                            itemId: item.Id,
+                            message: $"Workflow item key '{item.WorkflowName}/{item.ItemKey}' already exists.")));
+                }
+
+                _items[item.Id] = FromItem(item);
+                _itemIdsByKey[key] = item.Id;
+                itemsInserted++;
+            }
+
+            foreach (var evt in export.Events)
+            {
+                if (_events.Any(existing => existing.Id == evt.Id))
+                {
+                    eventsSkipped++;
+                    continue;
+                }
+
+                var state = FromEvent(evt);
+                _events.Add(state);
+                if (state.ItemId != null && state.IdempotencyKey != null)
+                {
+                    _eventIdsByIdempotencyKey[EventIdempotencyKey(state.ItemId, state.IdempotencyKey)] = state.Id;
+                }
+
+                eventsInserted++;
+            }
+
+            foreach (var artifact in export.Artifacts)
+            {
+                if (_artifacts.Any(existing => existing.Id == artifact.Id))
+                {
+                    artifactsSkipped++;
+                    continue;
+                }
+
+                var state = FromArtifact(artifact);
+                _artifacts.Add(state);
+                _artifactIdsByIdentity[ArtifactIdentity(state.ItemId, state.ArtifactKind, state.ArtifactRef)] = state.Id;
+                artifactsInserted++;
+            }
+
+            var result = new ScriptWorkflowLedgerImportResult(
+                runsInserted,
+                runsSkipped,
+                itemsInserted,
+                itemsSkipped,
+                eventsInserted,
+                eventsSkipped,
+                artifactsInserted,
+                artifactsSkipped,
+                0,
+                Array.Empty<string>());
+            return Task.FromResult(ScriptWorkflowLedgerResult<ScriptWorkflowLedgerImportResult>.Succeeded(result));
+        }
+    }
+
+    /// <inheritdoc />
+    public Task<ScriptWorkflowLedgerResult<ScriptWorkflowLedgerOverview>> GetOverviewAsync(
+        ScriptWorkflowLedgerOverviewQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (query == null)
+        {
+            return Task.FromResult(ScriptWorkflowLedgerResult<ScriptWorkflowLedgerOverview>.Failed(
+                Error(ScriptWorkflowLedgerErrorCode.InvalidRequest, message: "Workflow ledger overview query is required.")));
+        }
+
+        lock (_gate)
+        {
+            var now = query.NowUtc?.ToUniversalTime() ?? DateTimeOffset.UtcNow;
+            var runs = FilterRuns(query).ToArray();
+            var items = FilterItems(query).ToArray();
+            var overview = new ScriptWorkflowLedgerOverview(
+                runs.Length,
+                items.Length,
+                CountBy(runs, run => run.Status),
+                CountBy(items, item => item.State),
+                CountBy(items, item => item.Stage),
+                items.Count(item => item.State == "retry_ready" && (!item.NextRetryAt.HasValue || item.NextRetryAt <= now)),
+                items.Count(item => item.LeaseOwner != null && item.LeaseExpiresAt.HasValue && item.LeaseExpiresAt > now),
+                items.Count(item => item.LeaseOwner != null && item.LeaseExpiresAt.HasValue && item.LeaseExpiresAt <= now),
+                BuildAttentionItems(runs, items, now, ClampTake(query.AttentionTake)));
+
+            return Task.FromResult(ScriptWorkflowLedgerResult<ScriptWorkflowLedgerOverview>.Succeeded(overview));
+        }
+    }
+
+    /// <inheritdoc />
+    public Task<ScriptWorkflowLedgerResult<ScriptWorkflowTransitionGraph>> GetTransitionGraphAsync(
+        ScriptWorkflowTransitionGraphQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (query == null)
+        {
+            return Task.FromResult(ScriptWorkflowLedgerResult<ScriptWorkflowTransitionGraph>.Failed(
+                Error(ScriptWorkflowLedgerErrorCode.InvalidRequest, message: "Workflow transition graph query is required.")));
+        }
+
+        lock (_gate)
+        {
+            var take = ClampTake(query.Take);
+            if (take <= 0)
+            {
+                return Task.FromResult(ScriptWorkflowLedgerResult<ScriptWorkflowTransitionGraph>.Succeeded(
+                    EmptyTransitionGraph()));
+            }
+
+            var workflowName = TrimToNull(query.WorkflowName);
+            var runId = TrimToNull(query.RunId);
+            var graphItems = _items.Values
+                .Where(item => workflowName == null || item.WorkflowName == workflowName)
+                .Where(item => runId == null || item.RunId == runId)
+                .OrderByDescending(item => item.UpdatedAt)
+                .ThenByDescending(item => item.Sequence)
+                .Take(take)
+                .ToArray();
+            var itemIds = graphItems.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+            var nodeBuilders = new Dictionary<string, TransitionNodeBuilder>(StringComparer.Ordinal);
+            var edgeBuilders = new Dictionary<string, TransitionEdgeBuilder>(StringComparer.Ordinal);
+
+            foreach (var item in graphItems)
+            {
+                var node = GetOrAddTransitionNode(nodeBuilders, item.Stage, item.State);
+                node.CurrentItemCount++;
+                node.MarkSchemaStatus(ScriptWorkflowTransitionSchemaStatus.Observed);
+            }
+
+            foreach (var itemEvents in _events
+                .Where(evt => evt.ItemId != null && itemIds.Contains(evt.ItemId))
+                .Where(evt => evt.Stage != null && evt.State != null)
+                .OrderBy(evt => evt.ItemId, StringComparer.Ordinal)
+                .ThenBy(evt => evt.CreatedAt)
+                .ThenBy(evt => evt.Sequence)
+                .GroupBy(evt => evt.ItemId!, StringComparer.Ordinal))
+            {
+                EventState? previous = null;
+                foreach (var evt in itemEvents)
+                {
+                    var node = GetOrAddTransitionNode(nodeBuilders, evt.Stage!, evt.State!);
+                    node.EventCount++;
+                    node.MarkSchemaStatus(ScriptWorkflowTransitionSchemaStatus.Observed);
+                    if (IsProblemTransitionEvent(evt.EventType, evt.Error))
+                    {
+                        node.ErrorCount++;
+                    }
+
+                    if (previous != null &&
+                        (!string.Equals(previous.Stage, evt.Stage, StringComparison.Ordinal) ||
+                            !string.Equals(previous.State, evt.State, StringComparison.Ordinal)))
+                    {
+                        var edgeKey = TransitionEdgeKey(previous.Stage!, previous.State!, evt.Stage!, evt.State!);
+                        if (!edgeBuilders.TryGetValue(edgeKey, out var edge))
+                        {
+                            edge = new TransitionEdgeBuilder(previous.Stage!, previous.State!, evt.Stage!, evt.State!);
+                            edgeBuilders[edgeKey] = edge;
+                        }
+
+                        edge.Count++;
+                        edge.SampleItemId ??= evt.ItemId;
+                        if (!edge.LastSeenAt.HasValue || evt.CreatedAt > edge.LastSeenAt.Value)
+                        {
+                            edge.LastSeenAt = evt.CreatedAt;
+                        }
+
+                        if (IsProblemTransitionEvent(evt.EventType, evt.Error))
+                        {
+                            edge.ErrorCount++;
+                        }
+
+                        if (IsRetryTransitionEvent(evt.EventType))
+                        {
+                            edge.RetryCount++;
+                        }
+
+                        if (IsDeadLetterTransitionEvent(evt.EventType))
+                        {
+                            edge.DeadLetterCount++;
+                        }
+                    }
+
+                    previous = evt;
+                }
+            }
+
+            var schemaOverlay = ApplyTransitionGraphSchemaOverlay(
+                ResolveTransitionGraphWorkflowName(workflowName, runId),
+                nodeBuilders,
+                edgeBuilders);
+
+            var nodes = nodeBuilders.Values
+                .OrderBy(node => node.Stage, StringComparer.Ordinal)
+                .ThenBy(node => node.State, StringComparer.Ordinal)
+                .Select(node => new ScriptWorkflowTransitionNode(
+                    TransitionNodeId(node.Stage, node.State),
+                    node.Stage,
+                    node.State,
+                    node.CurrentItemCount,
+                    node.EventCount,
+                    node.ErrorCount,
+                    node.SchemaStatus))
+                .ToArray();
+            var edges = edgeBuilders.Values
+                .OrderByDescending(edge => edge.Count)
+                .ThenBy(edge => edge.SchemaStatus == ScriptWorkflowTransitionSchemaStatus.SchemaOnly ? 1 : 0)
+                .ThenBy(edge => edge.FromStage, StringComparer.Ordinal)
+                .ThenBy(edge => edge.ToStage, StringComparer.Ordinal)
+                .Select(edge => new ScriptWorkflowTransitionEdge(
+                    TransitionNodeId(edge.FromStage, edge.FromState),
+                    TransitionNodeId(edge.ToStage, edge.ToState),
+                    edge.FromStage,
+                    edge.FromState,
+                    edge.ToStage,
+                    edge.ToState,
+                    edge.Count,
+                    edge.ErrorCount,
+                    edge.RetryCount,
+                    edge.DeadLetterCount,
+                    edge.LastSeenAt,
+                    edge.SampleItemId,
+                    edge.SchemaStatus))
+                .ToArray();
+            var graph = new ScriptWorkflowTransitionGraph(
+                graphItems.Length,
+                edges.Sum(edge => edge.Count),
+                nodes,
+                edges,
+                schemaOverlay.Status,
+                schemaOverlay.Message,
+                schemaOverlay.AllowedTransitionCount,
+                schemaOverlay.UnexpectedTransitionCount,
+                schemaOverlay.SchemaOnlyTransitionCount);
+
+            return Task.FromResult(ScriptWorkflowLedgerResult<ScriptWorkflowTransitionGraph>.Succeeded(graph));
+        }
+    }
+
+    /// <inheritdoc />
+    public Task<ScriptWorkflowLedgerResult<ScriptWorkflowFlowEvidence>> GetFlowEvidenceAsync(
+        ScriptWorkflowFlowEvidenceQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (query == null)
+        {
+            return Task.FromResult(ScriptWorkflowLedgerResult<ScriptWorkflowFlowEvidence>.Failed(
+                Error(ScriptWorkflowLedgerErrorCode.InvalidRequest, message: "Workflow flow evidence query is required.")));
+        }
+
+        lock (_gate)
+        {
+            var workflowName = TrimToNull(query.WorkflowName);
+            var runId = TrimToNull(query.RunId);
+            var take = ClampTake(query.Take);
+            if (take <= 0)
+            {
+                return Task.FromResult(ScriptWorkflowLedgerResult<ScriptWorkflowFlowEvidence>.Succeeded(
+                    new ScriptWorkflowFlowEvidence(
+                        workflowName,
+                        runId,
+                        0,
+                        new Dictionary<string, int>(StringComparer.Ordinal),
+                        new Dictionary<string, ScriptWorkflowFlowQueueEvidence>(StringComparer.OrdinalIgnoreCase))));
+            }
+
+            var items = _items.Values
+                .Where(item => workflowName == null || item.WorkflowName == workflowName)
+                .Where(item => runId == null || item.RunId == runId)
+                .ToArray();
+            var itemIds = items.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+            var itemCountsByState = CountBy(items, item => item.State);
+            var queueBuilders = new Dictionary<string, FlowQueueEvidenceBuilder>(StringComparer.OrdinalIgnoreCase);
+            foreach (var evt in _events
+                .Where(evt => evt.ItemId != null && itemIds.Contains(evt.ItemId))
+                .Where(evt => evt.MetadataJson != null)
+                .OrderByDescending(evt => evt.CreatedAt)
+                .ThenByDescending(evt => evt.Sequence)
+                .Take(take))
+            {
+                var queueName = TryReadQueueName(evt.MetadataJson!);
+                if (queueName == null || !_items.TryGetValue(evt.ItemId!, out var item))
+                {
+                    continue;
+                }
+
+                if (!queueBuilders.TryGetValue(queueName, out var queue))
+                {
+                    queue = new FlowQueueEvidenceBuilder(queueName);
+                    queueBuilders[queueName] = queue;
+                }
+
+                queue.Add(item, evt);
+            }
+
+            var queues = queueBuilders
+                .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(pair => pair.Key, pair => pair.Value.ToEvidence(), StringComparer.OrdinalIgnoreCase);
+            var evidence = new ScriptWorkflowFlowEvidence(
+                workflowName,
+                runId,
+                items.Length,
+                itemCountsByState,
+                queues);
+
+            return Task.FromResult(ScriptWorkflowLedgerResult<ScriptWorkflowFlowEvidence>.Succeeded(evidence));
+        }
+    }
+
     private Task<ScriptWorkflowLedgerResult<ScriptWorkflowRun>> UpdateRunStatus(
         string runId,
         string status,
@@ -1031,6 +1542,621 @@ public sealed class ScriptInMemoryWorkflowLedger : IScriptWorkflowLedger
 
         return new ValueOrError<BulkTargets>(new BulkTargets(requested, items, errors), null);
     }
+
+    private Task<ScriptWorkflowLedgerResult<ScriptWorkflowLedgerRetentionResult>> ExecuteRetention(
+        ScriptWorkflowLedgerRetentionOptions options,
+        bool dryRun)
+    {
+        if (options == null)
+        {
+            return Task.FromResult(ScriptWorkflowLedgerResult<ScriptWorkflowLedgerRetentionResult>.Failed(
+                Error(ScriptWorkflowLedgerErrorCode.InvalidRequest, message: "Workflow ledger retention options are required.")));
+        }
+
+        if (!options.OlderThanUtc.HasValue)
+        {
+            return Task.FromResult(ScriptWorkflowLedgerResult<ScriptWorkflowLedgerRetentionResult>.Failed(
+                Error(ScriptWorkflowLedgerErrorCode.InvalidRequest, message: "OlderThanUtc is required.")));
+        }
+
+        var workflowName = TrimToNull(options.WorkflowName);
+        var cutoff = options.OlderThanUtc.Value.ToUniversalTime();
+        lock (_gate)
+        {
+            var runIds = _runs.Values
+                .Where(run => workflowName == null || run.WorkflowName == workflowName)
+                .Where(run => IsTerminalRunStatus(run.Status))
+                .Where(run => run.FinishedAt.HasValue && run.FinishedAt.Value < cutoff)
+                .Select(run => run.Id)
+                .ToHashSet(StringComparer.Ordinal);
+            var itemIds = _items.Values
+                .Where(item => runIds.Contains(item.RunId ?? string.Empty))
+                .Select(item => item.Id)
+                .ToHashSet(StringComparer.Ordinal);
+
+            if (options.IncludeStandaloneTerminalItems)
+            {
+                foreach (var item in _items.Values
+                    .Where(item => workflowName == null || item.WorkflowName == workflowName)
+                    .Where(item => item.RunId == null)
+                    .Where(item => IsTerminalItemState(item.State))
+                    .Where(item => item.UpdatedAt < cutoff))
+                {
+                    itemIds.Add(item.Id);
+                }
+            }
+
+            var eventsDeleted = _events.Count(evt =>
+                (evt.ItemId != null && itemIds.Contains(evt.ItemId)) ||
+                (evt.ItemId == null && evt.RunId != null && runIds.Contains(evt.RunId)));
+            var artifactsDeleted = _artifacts.Count(artifact => itemIds.Contains(artifact.ItemId));
+            var result = new ScriptWorkflowLedgerRetentionResult(
+                runIds.Count,
+                itemIds.Count,
+                eventsDeleted,
+                artifactsDeleted,
+                !dryRun && options.Vacuum && (runIds.Count > 0 || itemIds.Count > 0 || eventsDeleted > 0 || artifactsDeleted > 0),
+                dryRun);
+
+            if (!dryRun)
+            {
+                foreach (var itemId in itemIds)
+                {
+                    if (_items.Remove(itemId, out var item))
+                    {
+                        _itemIdsByKey.Remove(ItemKey(item.WorkflowName, item.ItemKey));
+                    }
+                }
+
+                foreach (var runId in runIds)
+                {
+                    _runs.Remove(runId);
+                }
+
+                _events.RemoveAll(evt =>
+                    (evt.ItemId != null && itemIds.Contains(evt.ItemId)) ||
+                    (evt.ItemId == null && evt.RunId != null && runIds.Contains(evt.RunId)));
+                _artifacts.RemoveAll(artifact => itemIds.Contains(artifact.ItemId));
+                RebuildEventIdempotencyIndex();
+                RebuildArtifactIdentityIndex();
+            }
+
+            return Task.FromResult(ScriptWorkflowLedgerResult<ScriptWorkflowLedgerRetentionResult>.Succeeded(result));
+        }
+    }
+
+    private IEnumerable<RunState> FilterRuns(ScriptWorkflowLedgerOverviewQuery query)
+    {
+        var workflowName = TrimToNull(query.WorkflowName);
+        var runId = TrimToNull(query.RunId);
+        var itemId = TrimToNull(query.ItemId);
+        if (itemId != null)
+        {
+            if (!_items.TryGetValue(itemId, out var item) || item.RunId == null || !_runs.TryGetValue(item.RunId, out var run))
+            {
+                return Array.Empty<RunState>();
+            }
+
+            return WorkflowRunMatches(run, workflowName, runId) ? [run] : Array.Empty<RunState>();
+        }
+
+        return _runs.Values.Where(run => WorkflowRunMatches(run, workflowName, runId));
+    }
+
+    private IEnumerable<ItemState> FilterItems(ScriptWorkflowLedgerOverviewQuery query)
+    {
+        var workflowName = TrimToNull(query.WorkflowName);
+        var runId = TrimToNull(query.RunId);
+        var itemId = TrimToNull(query.ItemId);
+        return _items.Values
+            .Where(item => itemId == null || item.Id == itemId)
+            .Where(item => workflowName == null || item.WorkflowName == workflowName)
+            .Where(item => runId == null || item.RunId == runId);
+    }
+
+    private static bool WorkflowRunMatches(RunState run, string? workflowName, string? runId) =>
+        (workflowName == null || run.WorkflowName == workflowName) &&
+        (runId == null || run.Id == runId);
+
+    private static IReadOnlyDictionary<string, int> CountBy<T>(
+        IEnumerable<T> source,
+        Func<T, string> keySelector) =>
+        source
+            .GroupBy(keySelector, StringComparer.Ordinal)
+            .OrderBy(group => group.Key, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
+
+    private static IReadOnlyList<ScriptWorkflowLedgerAttentionItem> BuildAttentionItems(
+        IReadOnlyList<RunState> runs,
+        IReadOnlyList<ItemState> items,
+        DateTimeOffset now,
+        int take)
+    {
+        if (take <= 0)
+        {
+            return Array.Empty<ScriptWorkflowLedgerAttentionItem>();
+        }
+
+        var attention = new List<PrioritizedAttentionItem>();
+        AddItemAttentionItems(attention, items, "expired_lease", "critical", 0, item =>
+            item.LeaseOwner != null && item.LeaseExpiresAt.HasValue && item.LeaseExpiresAt <= now,
+            "Workflow item lease has expired.");
+        AddItemAttentionItems(attention, items, "dead_item", "error", 1, item =>
+            item.State == "dead",
+            "Workflow item is dead-lettered.");
+        AddItemAttentionItems(attention, items, "failed_item", "error", 2, item =>
+            item.State == "failed",
+            "Workflow item failed.");
+        AddItemAttentionItems(attention, items, "retry_ready", "warning", 3, item =>
+            item.State == "retry_ready" && (!item.NextRetryAt.HasValue || item.NextRetryAt <= now),
+            "Workflow item is ready to retry.");
+
+        foreach (var run in runs.Where(run => run.Status == "failed"))
+        {
+            attention.Add(new PrioritizedAttentionItem(
+                4,
+                new ScriptWorkflowLedgerAttentionItem(
+                    "failed_run",
+                    "error",
+                    run.WorkflowName,
+                    run.Id,
+                    null,
+                    null,
+                    null,
+                    null,
+                    "Workflow run failed.",
+                    run.FinishedAt ?? run.StartedAt,
+                    run.LastError)));
+        }
+
+        return attention
+            .OrderBy(item => item.Priority)
+            .ThenByDescending(item => item.Item.Timestamp)
+            .Take(take)
+            .Select(item => item.Item)
+            .ToArray();
+    }
+
+    private static void AddItemAttentionItems(
+        List<PrioritizedAttentionItem> attention,
+        IEnumerable<ItemState> items,
+        string kind,
+        string severity,
+        int priority,
+        Func<ItemState, bool> predicate,
+        string message)
+    {
+        foreach (var item in items.Where(predicate))
+        {
+            attention.Add(new PrioritizedAttentionItem(
+                priority,
+                new ScriptWorkflowLedgerAttentionItem(
+                    kind,
+                    severity,
+                    item.WorkflowName,
+                    item.RunId,
+                    item.Id,
+                    item.ItemKey,
+                    item.Stage,
+                    item.State,
+                    message,
+                    item.UpdatedAt,
+                    item.LastError)));
+        }
+    }
+
+    private static ScriptWorkflowTransitionGraph EmptyTransitionGraph() =>
+        new(
+            0,
+            0,
+            Array.Empty<ScriptWorkflowTransitionNode>(),
+            Array.Empty<ScriptWorkflowTransitionEdge>());
+
+    private string? ResolveTransitionGraphWorkflowName(string? workflowName, string? runId)
+    {
+        if (workflowName != null)
+        {
+            return workflowName;
+        }
+
+        return runId == null || !_runs.TryGetValue(runId, out var run) ? null : run.WorkflowName;
+    }
+
+    private TransitionSchemaOverlay ApplyTransitionGraphSchemaOverlay(
+        string? workflowName,
+        Dictionary<string, TransitionNodeBuilder> nodes,
+        Dictionary<string, TransitionEdgeBuilder> edges)
+    {
+        if (workflowName == null)
+        {
+            return new TransitionSchemaOverlay(
+                ScriptWorkflowTransitionSchemaStatus.NoWorkflowSelected,
+                "Select one workflow to compare observed transitions with a workflow schema.");
+        }
+
+        if (_transitionValidator is not IScriptWorkflowLedgerSchemaProvider schemaProvider)
+        {
+            return new TransitionSchemaOverlay(
+                ScriptWorkflowTransitionSchemaStatus.NoSchema,
+                $"Workflow '{workflowName}' has no ledger schema.");
+        }
+
+        if (schemaProvider.TryGetInvalidSchemaError(workflowName, out var error))
+        {
+            return new TransitionSchemaOverlay(
+                ScriptWorkflowTransitionSchemaStatus.InvalidSchema,
+                $"Workflow '{workflowName}' schema is invalid: {error}");
+        }
+
+        if (!schemaProvider.TryGetSchema(workflowName, out var schema))
+        {
+            return new TransitionSchemaOverlay(
+                ScriptWorkflowTransitionSchemaStatus.NoSchema,
+                $"Workflow '{workflowName}' has no ledger schema.");
+        }
+
+        var allowedTransitionCount = 0;
+        var unexpectedTransitionCount = 0;
+        foreach (var edge in edges.Values)
+        {
+            if (schema.AllowsTransition(edge.FromStage, edge.FromState, edge.ToStage, edge.ToState))
+            {
+                edge.SchemaStatus = ScriptWorkflowTransitionSchemaStatus.Allowed;
+                allowedTransitionCount += edge.Count;
+                GetOrAddTransitionNode(nodes, edge.FromStage, edge.FromState).MarkSchemaStatus(ScriptWorkflowTransitionSchemaStatus.Allowed);
+                GetOrAddTransitionNode(nodes, edge.ToStage, edge.ToState).MarkSchemaStatus(ScriptWorkflowTransitionSchemaStatus.Allowed);
+            }
+            else
+            {
+                edge.SchemaStatus = ScriptWorkflowTransitionSchemaStatus.Unexpected;
+                unexpectedTransitionCount += edge.Count;
+                GetOrAddTransitionNode(nodes, edge.FromStage, edge.FromState).MarkSchemaStatus(ScriptWorkflowTransitionSchemaStatus.Unexpected);
+                GetOrAddTransitionNode(nodes, edge.ToStage, edge.ToState).MarkSchemaStatus(ScriptWorkflowTransitionSchemaStatus.Unexpected);
+            }
+        }
+
+        var schemaOnlyTransitionCount = 0;
+        foreach (var transition in schema.Transitions.Where(transition => transition.IsConcrete))
+        {
+            var edgeKey = TransitionEdgeKey(transition.FromStage!, transition.FromState!, transition.ToStage!, transition.ToState!);
+            if (edges.ContainsKey(edgeKey))
+            {
+                continue;
+            }
+
+            schemaOnlyTransitionCount++;
+            GetOrAddTransitionNode(nodes, transition.FromStage!, transition.FromState!)
+                .MarkSchemaStatus(ScriptWorkflowTransitionSchemaStatus.SchemaOnly);
+            GetOrAddTransitionNode(nodes, transition.ToStage!, transition.ToState!)
+                .MarkSchemaStatus(ScriptWorkflowTransitionSchemaStatus.SchemaOnly);
+            edges[edgeKey] = new TransitionEdgeBuilder(
+                transition.FromStage!,
+                transition.FromState!,
+                transition.ToStage!,
+                transition.ToState!)
+            {
+                SchemaStatus = ScriptWorkflowTransitionSchemaStatus.SchemaOnly
+            };
+        }
+
+        return new TransitionSchemaOverlay(
+            ScriptWorkflowTransitionSchemaStatus.ActiveSchema,
+            unexpectedTransitionCount > 0
+                ? $"{unexpectedTransitionCount} observed transition(s) do not match the workflow schema."
+                : "Observed transitions match the workflow schema.",
+            allowedTransitionCount,
+            unexpectedTransitionCount,
+            schemaOnlyTransitionCount);
+    }
+
+    private static TransitionNodeBuilder GetOrAddTransitionNode(
+        Dictionary<string, TransitionNodeBuilder> nodes,
+        string stage,
+        string state)
+    {
+        var id = TransitionNodeId(stage, state);
+        if (!nodes.TryGetValue(id, out var node))
+        {
+            node = new TransitionNodeBuilder(stage, state);
+            nodes[id] = node;
+        }
+
+        return node;
+    }
+
+    private static string TransitionEdgeKey(string fromStage, string fromState, string toStage, string toState) =>
+        $"{TransitionNodeId(fromStage, fromState)}\u001f{TransitionNodeId(toStage, toState)}";
+
+    private static string TransitionNodeId(string stage, string state) => $"{stage}\u001f{state}";
+
+    private static bool IsProblemTransitionEvent(string eventType, string? error) =>
+        !string.IsNullOrWhiteSpace(error) ||
+        eventType.Contains("fail", StringComparison.OrdinalIgnoreCase) ||
+        eventType.Contains("dead", StringComparison.OrdinalIgnoreCase) ||
+        eventType.Contains("cancel", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsRetryTransitionEvent(string eventType) =>
+        eventType.Contains("retry", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsDeadLetterTransitionEvent(string eventType) =>
+        eventType.Contains("dead", StringComparison.OrdinalIgnoreCase);
+
+    private static string? TryReadQueueName(string metadataJson)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(metadataJson);
+            if (!document.RootElement.TryGetProperty("queueName", out var queueNameElement) ||
+                queueNameElement.ValueKind != JsonValueKind.String)
+            {
+                return null;
+            }
+
+            return TrimToNull(queueNameElement.GetString());
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static bool IsProblemFlowEvidenceItem(ItemState item) =>
+        !string.IsNullOrWhiteSpace(item.LastError) ||
+        item.State is "dead" or "failed" or "cancelled" or "canceled";
+
+    private ScriptWorkflowLedgerResult ValidateImport(ScriptWorkflowLedgerExport export)
+    {
+        if (export.SchemaVersion != 1)
+        {
+            return ScriptWorkflowLedgerResult.Failed(Error(
+                ScriptWorkflowLedgerErrorCode.InvalidRequest,
+                message: "Workflow ledger export schema version is not supported."));
+        }
+
+        var runIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var run in export.Runs)
+        {
+            var required = ValidateRequiredImport(run.Id, "run.id") ??
+                ValidateRequiredImport(run.WorkflowName, "run.workflowName") ??
+                ValidateRequiredImport(run.Status, "run.status");
+            if (required != null)
+            {
+                return required;
+            }
+
+            if (run.StartedAt == default)
+            {
+                return InvalidImport("run.startedAt is required.");
+            }
+
+            if (!runIds.Add(run.Id))
+            {
+                return InvalidImport($"Duplicate workflow run ID '{run.Id}' in import.");
+            }
+        }
+
+        var itemIds = new HashSet<string>(StringComparer.Ordinal);
+        var itemKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in export.Items)
+        {
+            var required = ValidateRequiredImport(item.Id, "item.id") ??
+                ValidateRequiredImport(item.WorkflowName, "item.workflowName") ??
+                ValidateRequiredImport(item.ItemKey, "item.itemKey") ??
+                ValidateRequiredImport(item.Stage, "item.stage") ??
+                ValidateRequiredImport(item.State, "item.state");
+            if (required != null)
+            {
+                return required;
+            }
+
+            if (item.CreatedAt == default)
+            {
+                return InvalidImport("item.createdAt is required.");
+            }
+
+            if (item.UpdatedAt == default)
+            {
+                return InvalidImport("item.updatedAt is required.");
+            }
+
+            if (!itemIds.Add(item.Id))
+            {
+                return InvalidImport($"Duplicate workflow item ID '{item.Id}' in import.");
+            }
+
+            if (!itemKeys.Add(ItemKey(item.WorkflowName, item.ItemKey)))
+            {
+                return InvalidImport($"Duplicate workflow item key '{item.WorkflowName}/{item.ItemKey}' in import.");
+            }
+        }
+
+        var eventIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var evt in export.Events)
+        {
+            var required = ValidateRequiredImport(evt.Id, "event.id") ??
+                ValidateRequiredImport(evt.EventType, "event.eventType");
+            if (required != null)
+            {
+                return required;
+            }
+
+            if (evt.CreatedAt == default)
+            {
+                return InvalidImport("event.createdAt is required.");
+            }
+
+            if (!eventIds.Add(evt.Id))
+            {
+                return InvalidImport($"Duplicate workflow event ID '{evt.Id}' in import.");
+            }
+        }
+
+        var artifactIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var artifact in export.Artifacts)
+        {
+            var required = ValidateRequiredImport(artifact.Id, "artifact.id") ??
+                ValidateRequiredImport(artifact.ItemId, "artifact.itemId") ??
+                ValidateRequiredImport(artifact.ArtifactKind, "artifact.artifactKind") ??
+                ValidateRequiredImport(artifact.ArtifactRef, "artifact.artifactRef");
+            if (required != null)
+            {
+                return required;
+            }
+
+            if (artifact.CreatedAt == default)
+            {
+                return InvalidImport("artifact.createdAt is required.");
+            }
+
+            if (!artifactIds.Add(artifact.Id))
+            {
+                return InvalidImport($"Duplicate workflow artifact ID '{artifact.Id}' in import.");
+            }
+        }
+
+        return ScriptWorkflowLedgerResult.Succeeded();
+    }
+
+    private ScriptWorkflowLedgerResult ValidateImportReferences(ScriptWorkflowLedgerExport export)
+    {
+        var runIds = export.Runs.Select(run => run.Id).ToHashSet(StringComparer.Ordinal);
+        var itemIds = export.Items.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+        var eventIds = export.Events.Select(evt => evt.Id).ToHashSet(StringComparer.Ordinal);
+
+        foreach (var item in export.Items)
+        {
+            if (item.RunId != null && !runIds.Contains(item.RunId) && !_runs.ContainsKey(item.RunId))
+            {
+                return InvalidImport($"Workflow item '{item.Id}' references missing run '{item.RunId}'.");
+            }
+        }
+
+        foreach (var evt in export.Events)
+        {
+            if (evt.ItemId != null && !itemIds.Contains(evt.ItemId) && !_items.ContainsKey(evt.ItemId))
+            {
+                return InvalidImport($"Workflow event '{evt.Id}' references missing item '{evt.ItemId}'.");
+            }
+
+            if (evt.RunId != null && !runIds.Contains(evt.RunId) && !_runs.ContainsKey(evt.RunId))
+            {
+                return InvalidImport($"Workflow event '{evt.Id}' references missing run '{evt.RunId}'.");
+            }
+        }
+
+        foreach (var artifact in export.Artifacts)
+        {
+            if (!itemIds.Contains(artifact.ItemId) && !_items.ContainsKey(artifact.ItemId))
+            {
+                return InvalidImport($"Workflow artifact '{artifact.Id}' references missing item '{artifact.ItemId}'.");
+            }
+
+            if (artifact.EventId != null && !eventIds.Contains(artifact.EventId) && !_events.Any(evt => evt.Id == artifact.EventId))
+            {
+                return InvalidImport($"Workflow artifact '{artifact.Id}' references missing event '{artifact.EventId}'.");
+            }
+        }
+
+        return ScriptWorkflowLedgerResult.Succeeded();
+    }
+
+    private static ScriptWorkflowLedgerResult? ValidateRequiredImport(string? value, string name) =>
+        TrimToNull(value) == null ? InvalidImport($"{name} is required.") : null;
+
+    private static ScriptWorkflowLedgerResult InvalidImport(string message) =>
+        ScriptWorkflowLedgerResult.Failed(Error(ScriptWorkflowLedgerErrorCode.InvalidRequest, message: message));
+
+    private void RebuildEventIdempotencyIndex()
+    {
+        _eventIdsByIdempotencyKey.Clear();
+        foreach (var evt in _events)
+        {
+            if (evt.ItemId != null && evt.IdempotencyKey != null)
+            {
+                _eventIdsByIdempotencyKey[EventIdempotencyKey(evt.ItemId, evt.IdempotencyKey)] = evt.Id;
+            }
+        }
+    }
+
+    private void RebuildArtifactIdentityIndex()
+    {
+        _artifactIdsByIdentity.Clear();
+        foreach (var artifact in _artifacts)
+        {
+            _artifactIdsByIdentity[ArtifactIdentity(artifact.ItemId, artifact.ArtifactKind, artifact.ArtifactRef)] = artifact.Id;
+        }
+    }
+
+    private static bool IsTerminalRunStatus(string status) =>
+        status is "completed" or "failed" or "cancelled" or "canceled";
+
+    private static bool IsTerminalItemState(string state) =>
+        state is "completed" or "failed" or "dead" or "skipped" or "cancelled" or "canceled";
+
+    private RunState FromRun(ScriptWorkflowRun run) => new()
+    {
+        Id = run.Id,
+        WorkflowName = run.WorkflowName,
+        Status = run.Status,
+        Source = run.Source,
+        StartedAt = run.StartedAt,
+        FinishedAt = run.FinishedAt,
+        LastError = run.LastError,
+        MetadataJson = run.MetadataJson,
+        Sequence = _sequence++
+    };
+
+    private ItemState FromItem(ScriptWorkflowItem item) => new()
+    {
+        Id = item.Id,
+        WorkflowName = item.WorkflowName,
+        ItemKey = item.ItemKey,
+        ItemType = item.ItemType,
+        RunId = item.RunId,
+        Stage = item.Stage,
+        State = item.State,
+        Priority = item.Priority,
+        AttemptCount = item.AttemptCount,
+        MaxAttempts = item.MaxAttempts,
+        NextRetryAt = item.NextRetryAt,
+        LeaseOwner = item.LeaseOwner,
+        LeaseExpiresAt = item.LeaseExpiresAt,
+        LastError = item.LastError,
+        LastErrorType = item.LastErrorType,
+        CreatedAt = item.CreatedAt,
+        UpdatedAt = item.UpdatedAt,
+        MetadataJson = item.MetadataJson,
+        Sequence = _sequence++
+    };
+
+    private EventState FromEvent(ScriptWorkflowEvent evt) => new()
+    {
+        Id = evt.Id,
+        RunId = evt.RunId,
+        ItemId = evt.ItemId,
+        EventType = evt.EventType,
+        Stage = evt.Stage,
+        State = evt.State,
+        Message = evt.Message,
+        Error = evt.Error,
+        IdempotencyKey = evt.IdempotencyKey,
+        CreatedAt = evt.CreatedAt,
+        MetadataJson = evt.MetadataJson,
+        Sequence = _sequence++
+    };
+
+    private ArtifactState FromArtifact(ScriptWorkflowArtifact artifact) => new()
+    {
+        Id = artifact.Id,
+        ItemId = artifact.ItemId,
+        EventId = artifact.EventId,
+        ArtifactKind = artifact.ArtifactKind,
+        ArtifactRef = artifact.ArtifactRef,
+        Role = artifact.Role,
+        CreatedAt = artifact.CreatedAt,
+        MetadataJson = artifact.MetadataJson,
+        Sequence = _sequence++
+    };
 
     private ScriptWorkflowLedgerResult<ScriptWorkflowItem> RetryItemCore(ItemState item, DateTimeOffset? nextRetryAt)
     {
@@ -1401,6 +2527,118 @@ public sealed class ScriptInMemoryWorkflowLedger : IScriptWorkflowLedger
         int Requested,
         IReadOnlyList<ItemState> Items,
         IReadOnlyList<ScriptWorkflowBulkMutationError> Errors);
+
+    private sealed record PrioritizedAttentionItem(int Priority, ScriptWorkflowLedgerAttentionItem Item);
+
+    private sealed record TransitionSchemaOverlay(
+        string Status,
+        string? Message,
+        int AllowedTransitionCount = 0,
+        int UnexpectedTransitionCount = 0,
+        int SchemaOnlyTransitionCount = 0);
+
+    private sealed class TransitionNodeBuilder
+    {
+        public TransitionNodeBuilder(string stage, string state)
+        {
+            Stage = stage;
+            State = state;
+        }
+
+        public string Stage { get; }
+        public string State { get; }
+        public int CurrentItemCount { get; set; }
+        public int EventCount { get; set; }
+        public int ErrorCount { get; set; }
+        public string SchemaStatus { get; private set; } = ScriptWorkflowTransitionSchemaStatus.Observed;
+
+        public void MarkSchemaStatus(string status)
+        {
+            if (SchemaStatus == ScriptWorkflowTransitionSchemaStatus.Unexpected)
+            {
+                return;
+            }
+
+            if (status == ScriptWorkflowTransitionSchemaStatus.Unexpected ||
+                SchemaStatus == ScriptWorkflowTransitionSchemaStatus.Observed ||
+                SchemaStatus == ScriptWorkflowTransitionSchemaStatus.SchemaOnly)
+            {
+                SchemaStatus = status;
+            }
+        }
+    }
+
+    private sealed class TransitionEdgeBuilder
+    {
+        public TransitionEdgeBuilder(string fromStage, string fromState, string toStage, string toState)
+        {
+            FromStage = fromStage;
+            FromState = fromState;
+            ToStage = toStage;
+            ToState = toState;
+        }
+
+        public string FromStage { get; }
+        public string FromState { get; }
+        public string ToStage { get; }
+        public string ToState { get; }
+        public int Count { get; set; }
+        public int ErrorCount { get; set; }
+        public int RetryCount { get; set; }
+        public int DeadLetterCount { get; set; }
+        public DateTimeOffset? LastSeenAt { get; set; }
+        public string? SampleItemId { get; set; }
+        public string SchemaStatus { get; set; } = ScriptWorkflowTransitionSchemaStatus.Observed;
+    }
+
+    private sealed class FlowQueueEvidenceBuilder
+    {
+        private readonly HashSet<string> _itemIds = new(StringComparer.Ordinal);
+        private readonly HashSet<string> _problemItemIds = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, HashSet<string>> _itemIdsByState = new(StringComparer.Ordinal);
+
+        public FlowQueueEvidenceBuilder(string queueName)
+        {
+            QueueName = queueName;
+        }
+
+        public string QueueName { get; }
+        public DateTimeOffset? LastSeenAt { get; private set; }
+        public string? SampleItemId { get; private set; }
+
+        public void Add(ItemState item, EventState evt)
+        {
+            _itemIds.Add(item.Id);
+            if (!_itemIdsByState.TryGetValue(item.State, out var stateItems))
+            {
+                stateItems = new HashSet<string>(StringComparer.Ordinal);
+                _itemIdsByState[item.State] = stateItems;
+            }
+
+            stateItems.Add(item.Id);
+            if (IsProblemFlowEvidenceItem(item))
+            {
+                _problemItemIds.Add(item.Id);
+            }
+
+            if (!LastSeenAt.HasValue || evt.CreatedAt > LastSeenAt.Value)
+            {
+                LastSeenAt = evt.CreatedAt;
+                SampleItemId = item.Id;
+            }
+        }
+
+        public ScriptWorkflowFlowQueueEvidence ToEvidence() =>
+            new(
+                QueueName,
+                _itemIds.Count,
+                _itemIdsByState
+                    .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                    .ToDictionary(pair => pair.Key, pair => pair.Value.Count, StringComparer.Ordinal),
+                _problemItemIds.Count,
+                LastSeenAt,
+                SampleItemId);
+    }
 
     private sealed class RunState
     {

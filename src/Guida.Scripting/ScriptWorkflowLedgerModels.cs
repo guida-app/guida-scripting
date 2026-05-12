@@ -364,6 +364,164 @@ public sealed record ScriptWorkflowBulkMutationError(
     string? WorkflowName,
     string Error);
 
+public sealed record ScriptWorkflowLedgerRetentionOptions
+{
+    public string? WorkflowName { get; init; }
+    public DateTimeOffset? OlderThanUtc { get; init; }
+    public bool IncludeStandaloneTerminalItems { get; init; } = true;
+    public bool Vacuum { get; init; }
+}
+
+public sealed record ScriptWorkflowLedgerRetentionResult(
+    int RunsDeleted,
+    int ItemsDeleted,
+    int EventsDeleted,
+    int ArtifactsDeleted,
+    bool Vacuumed,
+    bool DryRun);
+
+public sealed record ScriptWorkflowLedgerExportOptions
+{
+    public string? WorkflowName { get; init; }
+    public string? RunId { get; init; }
+    public IReadOnlyList<string>? ItemIds { get; init; }
+    public bool IncludeEvents { get; init; } = true;
+    public bool IncludeArtifacts { get; init; } = true;
+    public int Take { get; init; } = 1000;
+}
+
+public sealed record ScriptWorkflowLedgerExport
+{
+    public int SchemaVersion { get; init; } = 1;
+    public DateTimeOffset ExportedAt { get; init; } = DateTimeOffset.UtcNow;
+    public IReadOnlyList<ScriptWorkflowRun> Runs { get; init; } = Array.Empty<ScriptWorkflowRun>();
+    public IReadOnlyList<ScriptWorkflowItem> Items { get; init; } = Array.Empty<ScriptWorkflowItem>();
+    public IReadOnlyList<ScriptWorkflowEvent> Events { get; init; } = Array.Empty<ScriptWorkflowEvent>();
+    public IReadOnlyList<ScriptWorkflowArtifact> Artifacts { get; init; } = Array.Empty<ScriptWorkflowArtifact>();
+}
+
+public sealed record ScriptWorkflowLedgerImportResult(
+    int RunsInserted,
+    int RunsSkipped,
+    int ItemsInserted,
+    int ItemsSkipped,
+    int EventsInserted,
+    int EventsSkipped,
+    int ArtifactsInserted,
+    int ArtifactsSkipped,
+    int Errors,
+    IReadOnlyList<string> ErrorMessages);
+
+public sealed record ScriptWorkflowLedgerOverviewQuery
+{
+    public string? WorkflowName { get; init; }
+    public string? RunId { get; init; }
+    public string? ItemId { get; init; }
+    public DateTimeOffset? NowUtc { get; init; }
+    public int AttentionTake { get; init; } = 50;
+}
+
+public sealed record ScriptWorkflowLedgerOverview(
+    int TotalRuns,
+    int TotalItems,
+    IReadOnlyDictionary<string, int> RunCountsByStatus,
+    IReadOnlyDictionary<string, int> ItemCountsByState,
+    IReadOnlyDictionary<string, int> ItemCountsByStage,
+    int RetryReadyCount,
+    int ActiveLeaseCount,
+    int ExpiredLeaseCount,
+    IReadOnlyList<ScriptWorkflowLedgerAttentionItem> AttentionItems);
+
+public sealed record ScriptWorkflowLedgerAttentionItem(
+    string Kind,
+    string Severity,
+    string WorkflowName,
+    string? RunId,
+    string? ItemId,
+    string? ItemKey,
+    string? Stage,
+    string? State,
+    string Message,
+    DateTimeOffset Timestamp,
+    string? LastError);
+
+public sealed record ScriptWorkflowTransitionGraphQuery
+{
+    public string? WorkflowName { get; init; }
+    public string? RunId { get; init; }
+    public int Take { get; init; } = 1000;
+}
+
+public sealed record ScriptWorkflowTransitionGraph(
+    int TotalItems,
+    int TotalTransitions,
+    IReadOnlyList<ScriptWorkflowTransitionNode> Nodes,
+    IReadOnlyList<ScriptWorkflowTransitionEdge> Edges,
+    string SchemaStatus = ScriptWorkflowTransitionSchemaStatus.Unknown,
+    string? SchemaMessage = null,
+    int AllowedTransitionCount = 0,
+    int UnexpectedTransitionCount = 0,
+    int SchemaOnlyTransitionCount = 0);
+
+public sealed record ScriptWorkflowTransitionNode(
+    string Id,
+    string Stage,
+    string State,
+    int CurrentItemCount,
+    int EventCount,
+    int ErrorCount,
+    string SchemaStatus = ScriptWorkflowTransitionSchemaStatus.Observed);
+
+public sealed record ScriptWorkflowTransitionEdge(
+    string FromId,
+    string ToId,
+    string FromStage,
+    string FromState,
+    string ToStage,
+    string ToState,
+    int Count,
+    int ErrorCount,
+    int RetryCount,
+    int DeadLetterCount,
+    DateTimeOffset? LastSeenAt,
+    string? SampleItemId,
+    string SchemaStatus = ScriptWorkflowTransitionSchemaStatus.Observed);
+
+public static class ScriptWorkflowTransitionSchemaStatus
+{
+    public const string Unknown = "unknown";
+    public const string NoWorkflowSelected = "no_workflow_selected";
+    public const string NoSchema = "no_schema";
+    public const string InvalidSchema = "invalid_schema";
+    public const string ActiveSchema = "active_schema";
+    public const string Observed = "observed";
+    public const string Allowed = "allowed";
+    public const string Unexpected = "unexpected";
+    public const string SchemaOnly = "schema_only";
+}
+
+public sealed record ScriptWorkflowFlowEvidenceQuery
+{
+    public string? WorkflowName { get; init; }
+    public string? RunId { get; init; }
+    public int Take { get; init; } = 1000;
+}
+
+public sealed record ScriptWorkflowFlowEvidence(
+    string? WorkflowName,
+    string? RunId,
+    int TotalItems,
+    IReadOnlyDictionary<string, int> ItemCountsByState,
+    IReadOnlyDictionary<string, ScriptWorkflowFlowQueueEvidence> Queues);
+
+public sealed record ScriptWorkflowFlowQueueEvidence(
+    string QueueName,
+    int ItemCount,
+    IReadOnlyDictionary<string, int> ItemCountsByState,
+    int ProblemCount,
+    DateTimeOffset? LastSeenAt,
+    string? SampleItemId);
+
 /// <summary>
 /// Validates workflow ledger item creation and transitions.
 /// </summary>
