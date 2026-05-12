@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Guida.Scripting\Guida.Scripting.csproj" />
+    <ProjectReference Include="..\..\src\Guida.Scripting.Engines\Guida.Scripting.Engines.csproj" />
   </ItemGroup>
 
   <ItemGroup>
