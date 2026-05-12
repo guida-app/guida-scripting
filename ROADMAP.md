@@ -40,7 +40,7 @@ The public project should be an embeddable scripting runtime and host API framew
 - The solution targets plain `net9.0` and is pinned to .NET SDK `9.0.308` through `global.json`.
 - Use `-m:1` for solution-level restore, build, and test commands because the current Windows/sandbox environment has unreliable parallel MSBuild/Roslyn named-pipe behavior.
 - Phase 2 has implemented host-neutral capabilities for logging, document loading, workspace access, HTTP, secrets primitives, store, queue, worker jobs, search, and workflow ledger core.
-- Workflow work currently covers ledger lifecycle, bulk mutation, schema validation/provider contracts, queue/worker bridge helpers, and workspace layout/discovery; retention/export/import/read-model operations, workflow inspection/switching, and script-facing adapters remain later slices.
+- Workflow work currently covers ledger lifecycle, bulk mutation, schema validation/provider contracts, queue/worker bridge helpers, workspace layout/discovery, active-workflow overlay modeling, and workspace module-resolution helpers; retention/export/import/read-model operations, workflow inspection/switching, and script-facing adapters remain later slices.
 - `ROADMAP.md` remains an internal engineering checklist and is not public-facing.
 
 ## Phase 0: Repository Baseline — Done
@@ -187,7 +187,7 @@ Acceptance criteria:
 - Workflow capability tests preserve existing script-facing `g.workflow`, `g.workflows`, and `g.worker.workflow` behavior when those surfaces are extracted.
 - Workflow ledger core tests cover lifecycle, cancellation, bulk mutation, and schema validation/provider behavior.
 - Workflow queue/worker bridge tests cover enqueue envelope payloads, enqueue idempotency, and task-id-aware worker workflow context.
-- Workflow workspace layout tests cover global and workflow-scoped scripts, libraries, views, config discovery, workflow manifests, and workflow ledger schema loading.
+- Workflow workspace layout tests cover global and workflow-scoped scripts, libraries, views, config discovery, workflow manifests, workflow ledger schema loading, active-workflow overlays, and module/config path resolution.
 - Retention, export/import, overview, transition graph, and flow evidence tests are required if those operations are included in a public ledger capability.
 - `COMPATIBILITY_TRACKER.md` is updated when each workflow slice lands.
 - No public project file references closed-source or desktop-only packages.

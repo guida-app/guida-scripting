@@ -332,6 +332,7 @@ public sealed class ScriptWorkflowWorkspaceDiscovery : IScriptWorkflowWorkspaceD
                 {
                     Path = entry.Value.Path,
                     Name = entry.Value.Name,
+                    NameWithoutExtension = GetNameWithoutExtension(entry.Value.Name),
                     Kind = kind,
                     Scope = scope,
                     WorkflowName = workflowName,
@@ -416,6 +417,7 @@ public sealed class ScriptWorkflowWorkspaceDiscovery : IScriptWorkflowWorkspaceD
         {
             Path = entry.Path,
             Name = entry.Name,
+            NameWithoutExtension = GetNameWithoutExtension(entry.Name),
             Scope = scope,
             WorkflowName = workflowName,
             Length = entry.Length,
@@ -447,6 +449,12 @@ public sealed class ScriptWorkflowWorkspaceDiscovery : IScriptWorkflowWorkspaceD
     {
         var dot = name.LastIndexOf('.');
         return dot < 0 ? string.Empty : name[dot..];
+    }
+
+    private static string GetNameWithoutExtension(string name)
+    {
+        var dot = name.LastIndexOf('.');
+        return dot < 0 ? name : name[..dot];
     }
 
     private static ScriptWorkflowWorkspaceResult<T> Failed<T>(
