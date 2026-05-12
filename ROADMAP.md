@@ -43,6 +43,7 @@ The public project should be an embeddable scripting runtime and host API framew
 - Workflow work currently covers ledger lifecycle, bulk mutation, schema validation/provider contracts, queue/worker bridge helpers, workspace layout/discovery, active-workflow overlay modeling, workspace module-resolution helpers, workflow workspace management/read models, and workflow ledger administration/read models; script-facing adapters remain later slices.
 - Phase 3 has implemented dependency-free public API registry descriptor contracts, an initial extracted-capability registry for store, queue, workers, workflow ledger/workflows, and workspace access, deterministic TypeScript definition generation, portable manifest generation, Markdown documentation generation, and completion/hover/signature-help metadata helpers from the public registry.
 - Phase 4 has implemented optional concrete engine adapters in `Guida.Scripting.Engines` for ClearScript JavaScript/TypeScript registration, LuaCSharp Lua execution, and JanetSharp Janet execution. The core `Guida.Scripting` project remains free of concrete engine dependencies.
+- The SDK is not yet a drop-in replacement for Guida's scripting runtime. The next public SDK work is the script-facing `g.*` projection layer over the public capability contracts.
 - `ROADMAP.md` remains an internal engineering checklist and is not public-facing.
 
 ## Phase 0: Repository Baseline — Done
@@ -246,29 +247,81 @@ Acceptance criteria:
 - Parity tests cover common public APIs across all supported languages.
 - Engine tests cover exceptions, return values, async behavior where applicable, cancellation, and host capability calls.
 
-## Phase 5: Private Guida Host Integration
+## Phase 5: Script API Projection Layer
 
-- Update the private Guida desktop app to consume this repository as a project reference during extraction.
-- Move private implementations into the Guida app or a private host adapter package:
-  - WebView2 execution;
-  - browser tab management;
-  - DOM/page automation;
-  - web scraping and extraction;
-  - network capture and request interception;
-  - screenshots and OCR/VLM;
-  - WPF panes, command palette, editor, and desktop UI behavior.
-- Implement adapters from Guida private services to public host capability interfaces.
-- Keep adapter tests in the private Guida repository.
-- Avoid changing user-facing script behavior in the first integration pass.
+The SDK should now move deeper than host-neutral contracts by implementing the portable script-facing adapter layer for public-safe `g.*` surfaces. This is still public SDK work, not a Guida desktop implementation.
+
+Goals:
+
+- Project public capability contracts into JavaScript, Lua, and Janet with stable script-facing names, argument shapes, return shapes, and error behavior.
+- Keep the projection layer host-neutral: it may depend on public SDK contracts and optional engine interop helpers, but not on Guida desktop services, WebView2, WPF, private storage implementations, or closed API groups.
+- Preserve Guida-compatible script behavior for extracted public-safe surfaces unless a divergence is recorded in `COMPATIBILITY_TRACKER.md`.
+- Make the API registry, generated TypeScript/docs/completion metadata, and runtime adapters describe the same public surface.
+- Provide clear unavailable-capability errors through the same script-facing shapes across languages.
+
+Initial public-safe surfaces:
+
+- `g.log`, `g.wait`, and standard utility helpers already exposed by the concrete engines.
+- `g.store` over `IScriptStore`.
+- `g.queue` over `IScriptQueue`, preserving strategy-friendly queue semantics without depending on a concrete queue library.
+- `g.http` over `IScriptHttpClient`, including host-side secret header bindings rather than raw script-visible secret values.
+- `g.workspace` over `IScriptWorkspace` and `IScriptDocumentProvider`.
+- `g.workflow`, `g.workflows`, and `g.worker.workflow` over workflow ledger, workflow workspace, and worker workflow helper contracts.
+- `g.workers` and `g.worker` over `IScriptWorker` where the public worker contract is sufficient.
+- `g.search` over `IScriptSearch`.
+
+Explicit non-goals:
+
+- Do not implement WebView2 execution, browser tab management, DOM/page automation, scraping/extraction, interception, screenshots, OCR/VLM, Whisper/TTS, WPF panes, command palette, or editor UI in this repository.
+- Do not add private Guida service references, private generated manifests, or private docs.
+- Do not add `#include`, source concatenation preprocessing, generic module rewriting, or pragma parsing.
+- Do not force durable storage, StratQueue, SQLite, LiteDB, Lucene, or other host implementation choices into the SDK core.
 
 Acceptance criteria:
 
-- Existing Guida scripts continue to run through the extracted runtime.
-- Guida can repoint scripting runtime integration at this repository without public script API changes for extracted surfaces.
+- Runtime adapter tests prove the same public-safe `g.*` calls work through JavaScript, Lua, and Janet where the underlying language/runtime can represent the operation.
+- Missing capability tests prove scripts receive clear, stable unavailable-capability errors instead of null-reference or host-specific exceptions.
+- API registry tests and runtime adapter tests cover the same public-safe method names, parameters, return shapes, and error shapes.
+- Host-side secret HTTP header tests prove scripts can trigger configured secret header injection without receiving raw secret values.
+- Queue adapter tests preserve custom-dequeue-strategy compatibility at the public boundary without adding a concrete queue dependency.
+- Workflow adapter tests preserve extracted `g.workflow`, `g.workflows`, and `g.worker.workflow` behavior over the public ledger/workspace/worker contracts.
+- Public core remains free of desktop, browser, storage implementation, and concrete engine dependencies.
+- `COMPATIBILITY_TRACKER.md` records any intentional script-facing divergence before the adapter behavior ships.
+
+## Phase 6: Guida Integration Readiness
+
+After Phase 5, begin Guida-side integration hardening. This phase proves the public SDK boundary can support Guida without requiring public script API changes, but it should still proceed as an incremental private integration rather than a full runtime swap on day one.
+
+Goals:
+
+- Add private Guida adapters from existing Guida services to public SDK capability interfaces.
+- Keep WebView2, browser tabs, DOM/page automation, scraping/extraction, interception, screenshots, OCR/VLM, WPF panes, command palette, editor UI, durable storage, and private MCP/tool wiring in Guida or private adapter packages.
+- Run existing Guida scripting tests against SDK adapters where public-safe behavior has been extracted.
+- Identify missing SDK seams or runtime differences before attempting a full repoint.
+- Avoid changing user-facing script behavior during the first integration pass.
+
+Acceptance criteria:
+
+- Guida can reference the SDK source or packages without namespace collisions or conditional hacks.
+- Private adapter tests cover task/status/origin mapping, host context/capability binding, logging, store, queue, HTTP/secrets, workflow, workspace, workers, search, and concrete engine registration.
 - Existing Guida scripting tests either move to this repo if public-safe or remain private if they cover closed implementations.
 - Private Guida builds continue to support current Debug, Debug_Full, Release, and Release_Full modes.
+- Any missing SDK behavior discovered during integration is tracked in `COMPATIBILITY_TRACKER.md` or added back to this roadmap before migration proceeds.
 
-## Phase 6: Packaging And Release
+## Phase 7: Private Guida Runtime Repoint
+
+- Update the private Guida desktop app to consume this repository as the scripting runtime for extracted surfaces.
+- Migrate execution paths incrementally, starting with public-safe capability surfaces before browser/UI-heavy namespaces.
+- Keep private implementations and host-specific metadata in Guida-side adapters.
+- Preserve existing scripts and generated API shapes unless a divergence is explicitly accepted.
+
+Acceptance criteria:
+
+- Existing Guida scripts continue to run through the extracted runtime for extracted surfaces.
+- Guida can repoint scripting runtime integration at this repository without public script API changes for extracted surfaces.
+- Integration failures have clear SDK-vs-host ownership and are tracked before release.
+
+## Phase 8: Packaging And Release
 
 - Publish preview NuGet packages only after the private Guida app successfully consumes the extracted runtime.
 - Start with `0.1.0-alpha.1`.

@@ -32,7 +32,7 @@ public sealed class ScriptApiRegistryTests
         var groupNames = registry.Groups.Select(group => group.PropertyName).Order().ToArray();
 
         Assert.Equal(
-            ["queue", "store", "worker", "workers", "workflow", "workflows", "workspace"],
+            ["http", "queue", "search", "store", "worker", "workers", "workflow", "workflows", "workspace"],
             groupNames);
 
         Assert.DoesNotContain(registry.Groups, group => group.PropertyName is
@@ -173,6 +173,25 @@ public sealed class ScriptApiRegistryTests
 
         var entry = registry.Interfaces.Single(type => type.Name == "WorkspaceEntry");
         Assert.Contains(entry.Properties, property => property.Name == "kind" && property.Type.ToTypeString() == "\"file\" | \"directory\"");
+    }
+
+    [Fact]
+    public void Http_and_search_registries_match_public_projection_surface()
+    {
+        var registry = ScriptApiKnownRegistries.CreateExtractedCapabilities();
+
+        Assert.Equal(
+            ["g.http.request", "g.http.get", "g.http.post"],
+            GetGroup(registry, "http").Functions.Select(function => function.FullName).ToArray());
+        Assert.Equal(
+            ["g.search.query", "g.search.search"],
+            GetGroup(registry, "search").Functions.Select(function => function.FullName).ToArray());
+        Assert.Equal(
+            "  request(method: string, url: string, options?: HttpRequestOptions): Promise<HttpResponse>;",
+            registry.FindFunction("g.http.request")?.ToDeclarationString());
+        Assert.Equal(
+            "  query(query: string, options?: SearchOptions): Promise<SearchResponse>;",
+            registry.FindFunction("g.search.query")?.ToDeclarationString());
     }
 
     private static ScriptApiGroup GetGroup(ScriptApiRegistry registry, string propertyName) =>

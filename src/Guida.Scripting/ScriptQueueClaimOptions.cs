@@ -14,4 +14,9 @@ public sealed record ScriptQueueClaimOptions
     /// Optional duration that claimed items should be hidden from future claims.
     /// </summary>
     public TimeSpan? VisibilityTimeout { get; init; }
+
+    /// <summary>
+    /// Optional host-defined dequeue strategy name.
+    /// </summary>
+    public string? StrategyName { get; init; }
 }

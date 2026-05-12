@@ -13,9 +13,11 @@ public static class ScriptApiKnownRegistries
         var interfaces = new List<ScriptApiInterface>();
         interfaces.AddRange(CreateStoreInterfaces());
         interfaces.AddRange(CreateQueueInterfaces());
+        interfaces.AddRange(CreateHttpInterfaces());
         interfaces.AddRange(CreateWorkerInterfaces());
         interfaces.AddRange(CreateWorkflowInterfaces());
         interfaces.AddRange(CreateWorkspaceInterfaces());
+        interfaces.AddRange(CreateSearchInterfaces());
 
         return new ScriptApiRegistry
         {
@@ -24,11 +26,13 @@ public static class ScriptApiKnownRegistries
             [
                 CreateStoreGroup(),
                 CreateQueueGroup(),
+                CreateHttpGroup(),
                 CreateWorkersGroup(),
                 CreateWorkerGroup(),
                 CreateWorkflowGroup(),
                 CreateWorkflowsGroup(),
-                CreateWorkspaceGroup()
+                CreateWorkspaceGroup(),
+                CreateSearchGroup()
             ]
         };
     }
@@ -181,6 +185,43 @@ public static class ScriptApiKnownRegistries
                 Function("registerStrategy", "g.queue.registerStrategy", "queue", "Register a custom dequeue strategy.", ScriptApiType.Void,
                     Parameter("name", ScriptApiType.String, description: "Strategy name"),
                     Parameter("fnOrPath", Type("((groups: Record<string, number>, ctx: { lastGroup: string | null, callCount: number, state: Record<string, any> }) => string | null) | string"), description: "Strategy function or workspace script file path"))));
+
+    private static IReadOnlyList<ScriptApiInterface> CreateHttpInterfaces() =>
+    [
+        Interface("HttpSecretHeaderBinding", "Host-side secret-backed HTTP header binding", Properties(
+            Property("headerName", ScriptApiType.String, description: "HTTP header to set"),
+            Property("secretName", ScriptApiType.String, description: "Host-owned secret name"),
+            Property("valuePrefix", ScriptApiType.String, optional: true, description: "Value prefix such as Bearer"),
+            Property("replaceExisting", ScriptApiType.Boolean, optional: true, description: "Whether to replace an existing header"))),
+        Interface("HttpRequestOptions", "Options for a script HTTP request", Properties(
+            Property("headers", Type("Record<string, string>"), optional: true, description: "Literal request headers"),
+            Property("secretHeaders", Type("HttpSecretHeaderBinding[]"), optional: true, description: "Host-resolved secret headers"),
+            Property("body", ScriptApiType.Any, optional: true, description: "Request body"),
+            Property("contentType", ScriptApiType.String, optional: true, description: "Request body content type"))),
+        Interface("HttpResponse", "Script-safe HTTP response", Properties(
+            Property("status", ScriptApiType.Number, description: "HTTP status code"),
+            Property("statusText", ScriptApiType.String, optional: true, description: "HTTP reason phrase"),
+            Property("ok", ScriptApiType.Boolean, description: "Whether the response is a 2xx status"),
+            Property("body", ScriptApiType.String, description: "Response body text"),
+            Property("headers", Type("Record<string, string>"), description: "Response headers")))
+    ];
+
+    private static ScriptApiGroup CreateHttpGroup() =>
+        Group(
+            "HttpApi",
+            "http",
+            "Host-mediated HTTP API using BCL request and response boundaries",
+            Functions(
+                AsyncFunction("request", "g.http.request", "http", "Send an HTTP request through the host policy boundary.", ScriptApiType.Promise(Type("HttpResponse")),
+                    Parameter("method", ScriptApiType.String, description: "HTTP method"),
+                    Parameter("url", ScriptApiType.String, description: "Absolute request URL"),
+                    Parameter("options", Type("HttpRequestOptions"), optional: true)),
+                AsyncFunction("get", "g.http.get", "http", "Send a GET request through the host policy boundary.", ScriptApiType.Promise(Type("HttpResponse")),
+                    Parameter("url", ScriptApiType.String),
+                    Parameter("options", Type("HttpRequestOptions"), optional: true)),
+                AsyncFunction("post", "g.http.post", "http", "Send a POST request through the host policy boundary.", ScriptApiType.Promise(Type("HttpResponse")),
+                    Parameter("url", ScriptApiType.String),
+                    Parameter("options", Type("HttpRequestOptions"), optional: true))));
 
     private static IReadOnlyList<ScriptApiInterface> CreateWorkerInterfaces() =>
     [
@@ -451,6 +492,39 @@ public static class ScriptApiKnownRegistries
                     Parameter("path", ScriptApiType.String, description: "Logical workspace file path"),
                     Parameter("content", ScriptApiType.String, description: "Text content"),
                     Parameter("options", Type("WorkspaceWriteOptions"), optional: true))));
+
+    private static IReadOnlyList<ScriptApiInterface> CreateSearchInterfaces() =>
+    [
+        Interface("SearchOptions", "Options for host-mediated search", Properties(
+            Property("scope", ScriptApiType.String, optional: true, description: "Host-defined search scope"),
+            Property("limit", ScriptApiType.Number, optional: true, description: "Maximum result count"),
+            Property("offset", ScriptApiType.Number, optional: true, description: "Number of matching results to skip"))),
+        Interface("SearchItem", "One host-mediated search result", Properties(
+            Property("id", ScriptApiType.String, description: "Host-owned result id"),
+            Property("title", ScriptApiType.String, description: "Result title"),
+            Property("summary", ScriptApiType.String, optional: true, description: "Result summary"),
+            Property("uri", ScriptApiType.String, optional: true, description: "Result URI"),
+            Property("score", ScriptApiType.Number, optional: true, description: "Provider score"),
+            Property("contentType", ScriptApiType.String, optional: true, description: "Content type"),
+            Property("sourceName", ScriptApiType.String, optional: true, description: "Source or scope name"))),
+        Interface("SearchResponse", "Host-mediated search response", Properties(
+            Property("items", Type("SearchItem[]"), description: "Returned search items"),
+            Property("totalCount", ScriptApiType.Number, optional: true, description: "Total matching result count when known"),
+            Property("elapsedMs", ScriptApiType.Number, description: "Search elapsed milliseconds")))
+    ];
+
+    private static ScriptApiGroup CreateSearchGroup() =>
+        Group(
+            "SearchApi",
+            "search",
+            "Host-mediated search API",
+            Functions(
+                AsyncFunction("query", "g.search.query", "search", "Search host-owned content.", ScriptApiType.Promise(Type("SearchResponse")),
+                    Parameter("query", ScriptApiType.String, description: "Query text"),
+                    Parameter("options", Type("SearchOptions"), optional: true)),
+                AsyncFunction("search", "g.search.search", "search", "Alias for g.search.query.", ScriptApiType.Promise(Type("SearchResponse")),
+                    Parameter("query", ScriptApiType.String, description: "Query text"),
+                    Parameter("options", Type("SearchOptions"), optional: true))));
 
     private static ScriptApiFunction WorkerWorkflowFunction(
         string name,

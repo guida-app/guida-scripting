@@ -124,6 +124,7 @@ public sealed class JanetSharpScriptEngine : IScriptEngine
 
     private void RegisterStandardGlobals()
     {
+        var projection = new ScriptApiProjection(_context.HostContext);
         _janet!.Eval("(def g @{})");
 
         _janet.Register("g.log", args =>
@@ -151,6 +152,111 @@ public sealed class JanetSharpScriptEngine : IScriptEngine
             Task.Delay(milliseconds, _runningTokenSource?.Token ?? CancellationToken.None).GetAwaiter().GetResult();
             return Janet.Nil;
         });
+
+        RegisterApiFunction("g.store.put", args => projection.Store.Put(Arg<string>(args, 0), Arg<string>(args, 1), Arg(args, 2)));
+        RegisterApiFunction("g.store.get", args => projection.Store.Get(Arg<string>(args, 0), Arg<string>(args, 1)));
+        RegisterApiFunction("g.store.list", args => projection.Store.List(Arg<string>(args, 0), Arg(args, 1)));
+        RegisterApiFunction("g.store.search", args => projection.Store.Search(Arg<string>(args, 0), Arg<string>(args, 1), Arg(args, 2)));
+        RegisterApiFunction("g.store.delete", async args => await projection.Store.Delete(Arg<string>(args, 0), Arg<string>(args, 1)).ConfigureAwait(false));
+        RegisterApiFunction("g.store.count", async args => await projection.Store.Count(Arg<string>(args, 0)).ConfigureAwait(false));
+        RegisterApiFunction("g.store.clear", args => projection.Store.Clear(Arg<string>(args, 0)));
+        RegisterApiFunction("g.store.collections", _ => projection.Store.Collections().ContinueWith<object?>(task => task.Result, TaskScheduler.Default));
+
+        RegisterApiFunction("g.queue.enqueue", args => projection.Queue.Enqueue(Arg<string>(args, 0), Arg(args, 1), Arg(args, 2)));
+        RegisterApiFunction("g.queue.dequeue", args => projection.Queue.Dequeue(Arg<string>(args, 0), Arg(args, 1)));
+        RegisterApiFunction("g.queue.commit", args => projection.Queue.Commit(Arg<string>(args, 0)));
+        RegisterApiFunction("g.queue.abort", async args => await projection.Queue.Abort(Arg<string>(args, 0), Arg(args, 1)?.ToString()).ConfigureAwait(false));
+        RegisterApiFunction("g.queue.peek", args => projection.Queue.Peek(Arg<string>(args, 0)));
+        RegisterApiFunction("g.queue.count", async args => await projection.Queue.Count(Arg<string>(args, 0)).ConfigureAwait(false));
+        RegisterApiFunction("g.queue.clear", args => projection.Queue.Clear(Arg<string>(args, 0)));
+        RegisterApiFunction("g.queue.list", args => projection.Queue.List(Arg<string>(args, 0), Arg(args, 1)));
+        RegisterApiFunction("g.queue.queues", _ => Task.FromResult<object?>(projection.Queue.Queues()));
+        RegisterApiFunction("g.queue.deadLetter", args => Task.FromResult(projection.Queue.DeadLetter(Arg<string>(args, 0), Arg(args, 1))));
+        RegisterApiFunction("g.queue.retry", args => Task.FromResult(projection.Queue.Retry(Arg<string>(args, 0))));
+        RegisterApiFunction("g.queue.waitForItem", args => projection.Queue.WaitForItem(Arg<string>(args, 0), Arg(args, 1)));
+        RegisterApiFunction("g.queue.registerStrategy", args => Task.FromResult(projection.Queue.RegisterStrategy(Arg<string>(args, 0), Arg(args, 1))));
+
+        RegisterApiFunction("g.http.request", args => projection.Http.Request(Arg<string>(args, 0), Arg<string>(args, 1), Arg(args, 2)));
+        RegisterApiFunction("g.http.get", args => projection.Http.Get(Arg<string>(args, 0), Arg(args, 1)));
+        RegisterApiFunction("g.http.post", args => projection.Http.Post(Arg<string>(args, 0), Arg(args, 1)));
+
+        RegisterApiFunction("g.workspace.getEntry", args => projection.Workspace.GetEntry(Arg<string>(args, 0)));
+        RegisterApiFunction("g.workspace.list", args => projection.Workspace.List(Arg<string>(args, 0)));
+        RegisterApiFunction("g.workspace.readFile", args => projection.Workspace.ReadFile(Arg<string>(args, 0)));
+        RegisterApiFunction("g.workspace.writeFile", args => projection.Workspace.WriteFile(Arg<string>(args, 0), Arg<string>(args, 1), Arg(args, 2)));
+
+        RegisterApiFunction("g.search.query", args => projection.Search.Query(Arg<string>(args, 0), Arg(args, 1)));
+        RegisterApiFunction("g.search.search", args => projection.Search.Search(Arg<string>(args, 0), Arg(args, 1)));
+
+        RegisterApiFunction("g.workers.start", args => projection.Workers.Start(Arg(args, 0)));
+        RegisterApiFunction("g.workers.stop", args => Task.FromResult(projection.Workers.Stop(Arg(args, 0)?.ToString())));
+        RegisterApiFunction("g.workers.pause", _ => Task.FromResult(projection.Workers.Pause()));
+        RegisterApiFunction("g.workers.resume", _ => Task.FromResult(projection.Workers.Resume()));
+        RegisterApiFunction("g.workers.status", _ => projection.Workers.Status());
+
+        RegisterApiFunction("g.worker.getContext", _ => Task.FromResult(projection.Worker.GetContext()));
+        RegisterApiFunction("g.worker.workflow.getContext", _ => Task.FromResult(projection.Worker.Workflow.GetContext()));
+        RegisterApiFunction("g.worker.workflow.getItem", _ => projection.Worker.Workflow.GetItem());
+        RegisterApiFunction("g.worker.workflow.claim", args => projection.Worker.Workflow.Claim(Arg(args, 0)));
+        RegisterApiFunction("g.worker.workflow.complete", args => projection.Worker.Workflow.Complete(Arg(args, 0)));
+        RegisterApiFunction("g.worker.workflow.fail", args => projection.Worker.Workflow.Fail(Arg(args, 0)));
+        RegisterApiFunction("g.worker.workflow.release", args => projection.Worker.Workflow.Release(Arg(args, 0)));
+        RegisterApiFunction("g.worker.workflow.retry", args => projection.Worker.Workflow.Retry(Arg(args, 0)));
+        RegisterApiFunction("g.worker.workflow.deadLetter", args => projection.Worker.Workflow.DeadLetter(Arg(args, 0)));
+
+        RegisterApiFunction("g.workflow.runs.start", args => projection.Workflow.Runs.Start(Arg<string>(args, 0), Arg(args, 1)));
+        RegisterApiFunction("g.workflow.runs.get", args => projection.Workflow.Runs.Get(Arg<string>(args, 0)));
+        RegisterApiFunction("g.workflow.runs.list", args => projection.Workflow.Runs.List(Arg(args, 0)));
+        RegisterApiFunction("g.workflow.runs.finish", args => projection.Workflow.Runs.Finish(Arg<string>(args, 0), Arg(args, 1)));
+        RegisterApiFunction("g.workflow.runs.fail", args => projection.Workflow.Runs.Fail(Arg<string>(args, 0), Arg(args, 1)));
+        RegisterApiFunction("g.workflow.items.upsert", args => projection.Workflow.Items.Upsert(Arg(args, 0)));
+        RegisterApiFunction("g.workflow.items.get", args => projection.Workflow.Items.Get(Arg<string>(args, 0), Arg<string>(args, 1)));
+        RegisterApiFunction("g.workflow.items.getById", args => projection.Workflow.Items.GetById(Arg<string>(args, 0)));
+        RegisterApiFunction("g.workflow.items.query", args => projection.Workflow.Items.Query(Arg(args, 0)));
+        RegisterApiFunction("g.workflow.items.setState", args => projection.Workflow.Items.SetState(Arg<string>(args, 0), Arg(args, 1)));
+        RegisterApiFunction("g.workflow.items.appendEvent", args => projection.Workflow.Items.AppendEvent(Arg<string>(args, 0), Arg(args, 1)));
+        RegisterApiFunction("g.workflow.items.getEvents", args => projection.Workflow.Items.GetEvents(Arg<string>(args, 0), Arg(args, 1)));
+        RegisterApiFunction("g.workflow.items.attachArtifact", args => projection.Workflow.Items.AttachArtifact(Arg<string>(args, 0), Arg(args, 1)));
+        RegisterApiFunction("g.workflow.items.enqueue", args => projection.Workflow.Items.Enqueue(Arg(args, 0)));
+        RegisterApiFunction("g.workflow.items.getArtifacts", args => projection.Workflow.Items.GetArtifacts(Arg<string>(args, 0)));
+        RegisterApiFunction("g.workflow.items.claimNext", args => projection.Workflow.Items.ClaimNext(Arg(args, 0), Arg(args, 1)));
+        RegisterApiFunction("g.workflow.items.complete", args => projection.Workflow.Items.Complete(Arg(args, 0), Arg(args, 1)));
+        RegisterApiFunction("g.workflow.items.fail", args => projection.Workflow.Items.Fail(Arg(args, 0), Arg(args, 1)));
+        RegisterApiFunction("g.workflow.items.release", args => projection.Workflow.Items.Release(Arg(args, 0), Arg(args, 1)));
+        RegisterApiFunction("g.workflow.items.retry", args => projection.Workflow.Items.Retry(Arg(args, 0), Arg(args, 1)));
+        RegisterApiFunction("g.workflow.items.deadLetter", args => projection.Workflow.Items.DeadLetter(Arg(args, 0), Arg(args, 1)));
+
+        RegisterApiFunction("g.workflows.getActive", _ => projection.Workflows.GetActive());
+        RegisterApiFunction("g.workflows.list", _ => projection.Workflows.List());
+        RegisterApiFunction("g.workflows.switch", args => projection.Workflows.Switch(Arg<string>(args, 0)));
+    }
+
+    private void RegisterApiFunction(string name, Func<object?[], Task<object?>> callback)
+    {
+        _janet!.Register(name, args =>
+        {
+            var normalized = new object?[args.Length];
+            for (var index = 0; index < args.Length; index++)
+            {
+                normalized[index] = ConvertJanetValueToObject(args[index]);
+            }
+
+            var result = callback(normalized).GetAwaiter().GetResult();
+            return ConvertToJanetValue(result);
+        });
+    }
+
+    private static object? Arg(object?[] args, int index) =>
+        index < args.Length ? args[index] : null;
+
+    private static T Arg<T>(object?[] args, int index)
+    {
+        if (index >= args.Length || args[index] is null)
+        {
+            throw new InvalidOperationException($"Argument {index + 1} is required.");
+        }
+
+        return (T)Convert.ChangeType(args[index], typeof(T), System.Globalization.CultureInfo.InvariantCulture)!;
     }
 
     private ScriptExecutionResult ToResult(Janet value)
